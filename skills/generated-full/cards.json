@@ -1,0 +1,434 @@
+[
+  {
+    "cues": [
+      "Input and output shapes match and each source color has one target color"
+    ],
+    "example_programs": [
+      {
+        "args": {
+          "mapping": {
+            "1": 5,
+            "2": 6,
+            "3": 4,
+            "4": 3,
+            "5": 1,
+            "6": 2,
+            "8": 9,
+            "9": 8
+          }
+        },
+        "op": "recolor",
+        "steps": []
+      },
+      {
+        "args": {
+          "mapping": {
+            "0": 0,
+            "2": 4,
+            "3": 6,
+            "4": 0,
+            "6": 0
+          }
+        },
+        "op": "recolor",
+        "steps": []
+      },
+      {
+        "args": {
+          "mapping": {
+            "6": 2,
+            "7": 7
+          }
+        },
+        "op": "recolor",
+        "steps": []
+      },
+      {
+        "args": {
+          "mapping": {
+            "1": 1,
+            "7": 5,
+            "8": 8
+          }
+        },
+        "op": "recolor",
+        "steps": []
+      },
+      {
+        "args": {
+          "mapping": {
+            "1": 1,
+            "2": 2,
+            "3": 3,
+            "4": 4,
+            "5": 8,
+            "6": 6,
+            "7": 7,
+            "8": 5,
+            "9": 9
+          }
+        },
+        "op": "recolor",
+        "steps": []
+      }
+    ],
+    "failure_modes": [
+      "Using position-dependent recoloring without evidence"
+    ],
+    "family": "color-mapping",
+    "invariants": [
+      "The mapping is consistent across every cell and pair"
+    ],
+    "level": 1,
+    "name": "Consistent color mapping",
+    "skill_id": "learned-color-mapping",
+    "source_task_ids": [
+      "0d3d703e",
+      "aabf363d",
+      "b1948b0a",
+      "c8f0f002",
+      "d511f180"
+    ],
+    "strategy": [
+      "Infer a global source-to-target color map and preserve unmapped colors."
+    ]
+  },
+  {
+    "cues": [
+      "Output is a crop or one connected component from a larger scene"
+    ],
+    "example_programs": [
+      {
+        "args": {
+          "background": 0
+        },
+        "op": "crop_background",
+        "steps": []
+      },
+      {
+        "args": {
+          "background": 0,
+          "criterion": "largest"
+        },
+        "op": "select_component",
+        "steps": []
+      },
+      {
+        "args": {
+          "background": 0,
+          "criterion": "smallest"
+        },
+        "op": "select_component",
+        "steps": []
+      },
+      {
+        "args": {},
+        "op": "compose",
+        "steps": [
+          {
+            "args": {
+              "background": 2,
+              "criterion": "smallest"
+            },
+            "op": "select_component",
+            "steps": []
+          },
+          {
+            "args": {
+              "mapping": {
+                "0": 2,
+                "3": 3,
+                "5": 8
+              }
+            },
+            "op": "recolor",
+            "steps": []
+          }
+        ]
+      },
+      {
+        "args": {},
+        "op": "compose",
+        "steps": [
+          {
+            "args": {
+              "background": 1
+            },
+            "op": "crop_background",
+            "steps": []
+          },
+          {
+            "args": {
+              "mapping": {
+                "1": 0,
+                "2": 2,
+                "3": 3,
+                "5": 5,
+                "6": 6
+              }
+            },
+            "op": "recolor",
+            "steps": []
+          }
+        ]
+      },
+      {
+        "args": {},
+        "op": "compose",
+        "steps": [
+          {
+            "args": {
+              "background": 5,
+              "criterion": "largest"
+            },
+            "op": "select_component",
+            "steps": []
+          },
+          {
+            "args": {
+              "mapping": {
+                "1": 4,
+                "5": 5,
+                "8": 1
+              }
+            },
+            "op": "recolor",
+            "steps": []
+          }
+        ]
+      },
+      {
+        "args": {},
+        "op": "compose",
+        "steps": [
+          {
+            "args": {
+              "background": 5,
+              "criterion": "smallest"
+            },
+            "op": "select_component",
+            "steps": []
+          },
+          {
+            "args": {
+              "mapping": {
+                "1": 2,
+                "2": 4,
+                "4": 6,
+                "6": 8
+              }
+            },
+            "op": "recolor",
+            "steps": []
+          }
+        ]
+      }
+    ],
+    "failure_modes": [
+      "Assuming the largest object is always selected"
+    ],
+    "family": "object-selection",
+    "invariants": [
+      "Selected object cells preserve their relative coordinates"
+    ],
+    "level": 2,
+    "name": "Object extraction and selection",
+    "skill_id": "learned-object-selection",
+    "source_task_ids": [
+      "1cf80156",
+      "1f85a75f",
+      "23b5c85d",
+      "642d658d",
+      "a740d043",
+      "be94b721",
+      "bf699163",
+      "d9fac9be",
+      "de1cd16c"
+    ],
+    "strategy": [
+      "Segment components, compare roles, select by a stable property, then crop."
+    ]
+  },
+  {
+    "cues": [
+      "Output dimensions are a simple multiple or padded form of the input"
+    ],
+    "example_programs": [
+      {
+        "args": {
+          "columns": 2,
+          "rows": 2
+        },
+        "op": "scale",
+        "steps": []
+      },
+      {
+        "args": {
+          "columns": 3,
+          "rows": 3
+        },
+        "op": "scale",
+        "steps": []
+      },
+      {
+        "args": {
+          "columns": 2,
+          "rows": 1
+        },
+        "op": "tile",
+        "steps": []
+      }
+    ],
+    "failure_modes": [
+      "Confusing scale with tile"
+    ],
+    "family": "size-and-repetition",
+    "invariants": [
+      "Repeated copies preserve cell order"
+    ],
+    "level": 2,
+    "name": "Scaling, tiling, and framing",
+    "skill_id": "learned-size-and-repetition",
+    "source_task_ids": [
+      "60c09cac",
+      "9172f3a0",
+      "a416b8f3",
+      "c59eb873"
+    ],
+    "strategy": [
+      "Compare dimension ratios, distinguish pixel scaling from whole-grid tiling."
+    ]
+  },
+  {
+    "cues": [
+      "Colors and object shapes are preserved while coordinates change"
+    ],
+    "example_programs": [
+      {
+        "args": {
+          "turns": 2
+        },
+        "op": "rotate",
+        "steps": []
+      },
+      {
+        "args": {
+          "axis": "horizontal"
+        },
+        "op": "flip",
+        "steps": []
+      },
+      {
+        "args": {
+          "axis": "vertical"
+        },
+        "op": "flip",
+        "steps": []
+      },
+      {
+        "args": {},
+        "op": "transpose",
+        "steps": []
+      },
+      {
+        "args": {
+          "turns": 3
+        },
+        "op": "rotate",
+        "steps": []
+      }
+    ],
+    "failure_modes": [
+      "Confusing horizontal and vertical reflection"
+    ],
+    "family": "spatial-transform",
+    "invariants": [
+      "Color counts and object topology remain constant"
+    ],
+    "level": 1,
+    "name": "Rigid spatial transformation",
+    "skill_id": "learned-spatial-transform",
+    "source_task_ids": [
+      "3c9b0459",
+      "6150a2bd",
+      "67a3c6ac",
+      "68b16354",
+      "74dd1130",
+      "9dfd6313",
+      "ed36ccf7"
+    ],
+    "strategy": [
+      "Test rotations, reflections, and transpose; verify exactly."
+    ]
+  },
+  {
+    "cues": [
+      "No single primitive fits every demonstration",
+      "Output preserves several input relations"
+    ],
+    "example_programs": [],
+    "failure_modes": [
+      "Correct operations in the wrong order",
+      "A program that fits only one pair"
+    ],
+    "family": "composition",
+    "invariants": [
+      "Apply one ordered program to every demonstration",
+      "Do not special-case a grid"
+    ],
+    "level": 2,
+    "name": "Compositional transformation",
+    "skill_id": "level2-composition",
+    "source_task_ids": [],
+    "strategy": [
+      "Describe objects and relations before proposing transformations.",
+      "Compose the smallest spatial, color, selection, or repetition operations.",
+      "Execute the full program on every demonstration and revise from exact diffs."
+    ]
+  },
+  {
+    "cues": [
+      "Shapes behave as tokens, instructions, or role labels rather than decoration"
+    ],
+    "example_programs": [],
+    "failure_modes": [
+      "Treating every symbol as a geometric pattern",
+      "Fixating on symmetry alone"
+    ],
+    "family": "symbolic-interpretation",
+    "invariants": [
+      "Meaning must remain consistent across demonstrations"
+    ],
+    "level": 3,
+    "name": "Symbolic interpretation",
+    "skill_id": "level3-symbolic",
+    "source_task_ids": [],
+    "strategy": [
+      "List plausible semantic roles for each repeated symbol.",
+      "Test each role by predicting all demonstration outputs.",
+      "Prefer the role assignment with the shortest exact program."
+    ]
+  },
+  {
+    "cues": [
+      "The same local pattern changes differently depending on position or neighboring objects"
+    ],
+    "example_programs": [],
+    "failure_modes": [
+      "Using a global rule where a conditional rule is required"
+    ],
+    "family": "contextual-rule",
+    "invariants": [
+      "The branch condition must be observable in the input"
+    ],
+    "level": 3,
+    "name": "Contextual rule application",
+    "skill_id": "level3-context",
+    "source_task_ids": [],
+    "strategy": [
+      "Identify contexts that partition objects into roles.",
+      "Write the branch predicate before writing either transformation.",
+      "Verify both branches independently, then verify their composition."
+    ]
+  }
+]

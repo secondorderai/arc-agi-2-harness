@@ -1,0 +1,29 @@
+name: local-mlx-arc-diarc-ensemble
+model:
+  enabled: false
+mlx_ttt:
+  enabled: true
+  model_path: .runtime/models/qwen3-4b-arc-diarc-mlx-4bit
+  rank: 32
+  scale: 10.0
+  learning_rate: 0.00005
+  epochs: 5
+  min_epochs: 2
+  early_stop_median_loss: 0.01
+  early_stop_max_loss: 0.05
+  augmentation_count: 10
+  inference_augmentations: 4
+  samples: 0
+  temperature: 0.5
+  max_tokens: 1024
+  max_grid_side: 30
+budget:
+  total_seconds: 41400
+  level_1_seconds: 5
+  level_2_seconds: 240
+  level_3_seconds: 7200
+  level_2_calls: 1
+  level_3_calls: 1
+  independent_calls: 1
+skill_limit: 0
+seed: 42

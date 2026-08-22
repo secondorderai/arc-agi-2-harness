@@ -1,0 +1,19 @@
+name: deterministic
+model:
+  enabled: false
+  base_url: http://127.0.0.1:8080/v1
+  model: disabled
+  api_key: none
+  max_tokens: 0
+  thinking_budget_tokens: 0
+  temperature: 0
+  timeout_seconds: 1
+budget:
+  total_seconds: 41400
+  level_1_seconds: 5
+  level_2_seconds: 240
+  level_3_seconds: 600
+  level_2_calls: 0
+  level_3_calls: 0
+skill_limit: 4
+seed: 42

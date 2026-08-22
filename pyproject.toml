@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arc-agent"
+version = "0.1.0"
+description = "A verifier-guided, skill-learning ARC-AGI-2 solver for small local reasoning models"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "ARC-AGI-2 Harness Contributors" }]
+dependencies = [
+  "httpx>=0.28.1,<1",
+  "pillow>=11.2,<13",
+  "pydantic>=2.11,<3",
+  "pyyaml>=6.0.2,<7",
+  "typer>=0.16,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-cov>=6.1,<8",
+  "ruff>=0.12,<1",
+]
+[project.scripts]
+arc-agent = "arc_agent.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arc_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".runtime", "data", "dist", "runs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,0 +1,27 @@
+name: hybrid-world-model
+model:
+  enabled: false
+mlx_ttt:
+  enabled: false
+hybrid:
+  enabled: true
+  symbolic_enabled: true
+  neural_enabled: true
+  neural_backend: mlx
+  checkpoint_path: .runtime/models/hybrid-world-model/model.safetensors
+  max_program_depth: 3
+  max_search_nodes: 10000
+  max_symbolic_candidates: 16
+  search_time_seconds: 30.0
+  neural_top_k: 8
+  require_demo_verification: true
+budget:
+  total_seconds: 41400
+  level_1_seconds: 5
+  level_2_seconds: 240
+  level_3_seconds: 600
+  level_2_calls: 2
+  level_3_calls: 3
+  independent_calls: 2
+skill_limit: 4
+seed: 42

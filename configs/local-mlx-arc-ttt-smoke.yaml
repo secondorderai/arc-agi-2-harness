@@ -1,0 +1,26 @@
+name: local-mlx-arc-ttt-smoke
+model:
+  enabled: false
+mlx_ttt:
+  enabled: true
+  model_path: .runtime/models/qwen3-4b-arc-mlx-4bit
+  rank: 16
+  scale: 10.0
+  learning_rate: 0.00005
+  epochs: 1
+  augmentation_count: 1
+  inference_augmentations: 1
+  samples: 0
+  temperature: 0.5
+  max_tokens: 256
+  max_grid_side: 10
+budget:
+  total_seconds: 3600
+  level_1_seconds: 5
+  level_2_seconds: 60
+  level_3_seconds: 3600
+  level_2_calls: 1
+  level_3_calls: 1
+  independent_calls: 1
+skill_limit: 0
+seed: 42

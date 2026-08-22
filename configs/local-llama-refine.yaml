@@ -1,0 +1,20 @@
+name: local-llama-refine
+model:
+  enabled: true
+  base_url: http://127.0.0.1:8080/v1
+  model: prism-ml/Bonsai-27B-gguf
+  api_key: none
+  max_tokens: 1536
+  thinking_budget_tokens: 512
+  temperature: 0.9
+  timeout_seconds: 300
+budget:
+  total_seconds: 1800
+  level_1_seconds: 5
+  level_2_seconds: 600
+  level_3_seconds: 900
+  level_2_calls: 3
+  level_3_calls: 5
+  independent_calls: 4
+skill_limit: 4
+seed: 42

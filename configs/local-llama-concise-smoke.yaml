@@ -1,0 +1,21 @@
+name: local-llama-concise-smoke
+model:
+  enabled: true
+  base_url: http://127.0.0.1:8080/v1
+  model: prism-ml/Bonsai-27B-gguf
+  api_key: none
+  max_tokens: 1200
+  thinking_budget_tokens: 384
+  temperature: 0.9
+  timeout_seconds: 300
+  vision_enabled: true
+budget:
+  total_seconds: 300
+  level_1_seconds: 5
+  level_2_seconds: 120
+  level_3_seconds: 280
+  level_2_calls: 1
+  level_3_calls: 1
+  independent_calls: 1
+skill_limit: 1
+seed: 42

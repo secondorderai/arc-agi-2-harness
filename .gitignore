@@ -1,0 +1,16 @@
+.DS_Store
+.coverage
+.env
+.pytest_cache/
+.ruff_cache/
+.venv/
+.venv-bonsai/
+.runtime/
+__pycache__/
+*.py[cod]
+data/ARC-AGI-2/
+models/
+runs/
+dist/
+build/
+htmlcov/
