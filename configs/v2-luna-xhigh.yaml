@@ -1,0 +1,34 @@
+name: v2-luna-xhigh
+openai:
+  # Uses `arc-agent v2-auth-login`; set to api_key only for an explicit API-billed run.
+  auth_mode: chatgpt_subscription
+  model: gpt-5.6-luna
+  codex_cli: codex
+  subscription_daemon: true
+  reasoning_effort: xhigh
+  reasoning_context: all_turns
+  background: true
+  store: true
+  max_output_tokens: [32768, 65536, 128000]
+  request_timeout_seconds: 60
+  poll_initial_seconds: 2
+  poll_max_seconds: 60
+  retry_initial_seconds: 5
+  retry_max_seconds: 300
+guards:
+  max_source_chars: 20000
+  max_literal_scalars: 64
+  wall_timeout_seconds: 3
+  d4_transforms: true
+  color_permutations: 4
+  require_leave_one_out: true
+ranker:
+  enabled: true
+  seed: 42
+  epochs: 10
+  alpha: 0.0001
+  folds: 5
+  direct_verified_target: 8
+no_progress_reset_rounds: 3
+retrieved_programs: 8
+seed: 42

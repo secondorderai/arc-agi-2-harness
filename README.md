@@ -157,6 +157,17 @@ the solver must fall back to deterministic attempts.
 - `arc-agent evaluate`: solve labelled tasks and report official pass@2 plus strict task accuracy.
 - `arc-agent validate-submission`: validate task coverage, attempts, dimensions, and colors.
 - `arc-agent benchmark-model`: smoke-test the local OpenAI-compatible model server.
+- `arc-agent v2-auth-login`: sign a V2 workspace into Codex with ChatGPT subscription access.
+- `arc-agent v2-auth-status`: inspect that workspace-isolated subscription login.
+- `arc-agent v2-build-bank`: sequentially synthesize and checkpoint the Luna xhigh program bank.
+- `arc-agent v2-evaluate`: resume-safe blind evaluation using direct reuse plus Luna resynthesis.
+- `arc-agent v2-status`: inspect active task, quota pauses, usage, and the exact resume command.
+
+V2 defaults to ChatGPT subscription access through the Codex App Server, so it does not require
+`OPENAI_API_KEY`. Authenticate the run workspace once with `v2-auth-login`, then start the bank
+build. A subscription quota exhaustion pauses without advancing the active task; rerun the same
+command with `--resume` after the account resets. See [the V2 design and
+runbook](docs/V2_DESIGN.md).
 
 Run artifacts contain dataset/config hashes, per-task tiers, candidate programs, verifier
 outcomes, time, calls, token usage, `submission.json`, and Markdown/HTML reports.

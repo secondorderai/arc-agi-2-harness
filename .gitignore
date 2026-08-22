@@ -1,6 +1,8 @@
 .DS_Store
 .coverage
 .env
+.codex-subscription/
+**/.codex-subscription/
 .pytest_cache/
 .ruff_cache/
 .venv/

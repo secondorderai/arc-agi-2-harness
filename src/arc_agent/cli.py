@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -273,6 +275,179 @@ def benchmark_model(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True))
     typer.echo(json.dumps(result, indent=2, sort_keys=True))
+
+
+@app.command("v2-build-bank")
+def v2_build_bank(
+    data: Annotated[
+        Path, typer.Option(exists=True, readable=True, help="Labelled 1,000-task training set")
+    ] = Path("data/ARC-AGI-2/data/training"),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v2-luna-xhigh.yaml"
+    ),
+    workspace: Annotated[Path, typer.Option(help="Durable V2 run workspace")] = Path(
+        "runs/v2-main"
+    ),
+    resume: Annotated[
+        bool, typer.Option(help="Require an existing run instead of creating one")
+    ] = False,
+    restart_task: Annotated[
+        bool,
+        typer.Option(help="Start a fresh Luna chain for the active task without skipping it"),
+    ] = False,
+) -> None:
+    """Sequentially synthesize, verify, checkpoint, and freeze the V2 program bank."""
+    from arc_agent.v2_config import load_v2_config
+    from arc_agent.v2_experiment import V2Orchestrator
+    from arc_agent.v2_state import StateMismatch, V2State, WorkspaceBusy
+
+    tasks = load_tasks(data)
+    if any(pair.output is None for task in tasks for pair in task.test):
+        raise typer.BadParameter("V2 bank building requires labelled test outputs")
+    try:
+        with V2State(workspace) as state:
+            state.set_meta("training_data_path", str(data.resolve()))
+            state.set_meta("training_config_path", str(config.resolve()))
+            orchestrator = V2Orchestrator(load_v2_config(config), state)
+            try:
+                result = orchestrator.build_bank(
+                    tasks,
+                    dataset_hash=sha256_path(data),
+                    resume_only=resume,
+                    restart_task=restart_task,
+                )
+            finally:
+                orchestrator.close()
+    except (StateMismatch, WorkspaceBusy) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if result.status == "paused_quota":
+        raise typer.Exit(75)
+    if result.status == "paused_configuration":
+        raise typer.Exit(78)
+
+
+@app.command("v2-evaluate")
+def v2_evaluate(
+    data: Annotated[
+        Path, typer.Option(exists=True, readable=True, help="Labelled 120-task public eval set")
+    ] = Path("data/ARC-AGI-2/data/evaluation"),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v2-luna-xhigh.yaml"
+    ),
+    workspace: Annotated[Path, typer.Option(help="Completed V2 bank workspace")] = Path(
+        "runs/v2-main"
+    ),
+    resume: Annotated[bool, typer.Option(help="Require an existing evaluation run")] = False,
+    restart_task: Annotated[
+        bool,
+        typer.Option(help="Start a fresh Luna chain for the active task without skipping it"),
+    ] = False,
+) -> None:
+    """Run or resume the frozen, label-blind V2 public evaluation."""
+    from arc_agent.v2_config import load_v2_config
+    from arc_agent.v2_experiment import V2Orchestrator
+    from arc_agent.v2_state import StateMismatch, V2State, WorkspaceBusy
+
+    tasks = load_tasks(data)
+    if any(pair.output is None for task in tasks for pair in task.test):
+        raise typer.BadParameter("V2 evaluation scoring requires labelled test outputs")
+    try:
+        with V2State(workspace) as state:
+            state.set_meta("evaluation_data_path", str(data.resolve()))
+            state.set_meta("evaluation_config_path", str(config.resolve()))
+            orchestrator = V2Orchestrator(load_v2_config(config), state)
+            try:
+                result = orchestrator.evaluate(
+                    tasks,
+                    dataset_hash=sha256_path(data),
+                    resume_only=resume,
+                    restart_task=restart_task,
+                )
+            finally:
+                orchestrator.close()
+    except (StateMismatch, WorkspaceBusy) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if result.status == "paused_quota":
+        raise typer.Exit(75)
+    if result.status == "paused_configuration":
+        raise typer.Exit(78)
+
+
+@app.command("v2-status")
+def v2_status(
+    workspace: Annotated[Path, typer.Option(exists=True, readable=True)] = Path("runs/v2-main"),
+    phase: Annotated[str, typer.Option(help="training or evaluation")] = "training",
+) -> None:
+    """Show checkpoint, quota-pause, usage, and exact V2 resume information."""
+    from arc_agent.v2_state import V2State
+
+    if phase not in {"training", "evaluation"}:
+        raise typer.BadParameter("phase must be training or evaluation")
+    with V2State(workspace, read_only=True) as state:
+        summary = state.summary(phase)
+        data_path = state.get_meta(f"{phase}_data_path")
+        config_path = state.get_meta(f"{phase}_config_path")
+    command = "v2-build-bank" if phase == "training" else "v2-evaluate"
+    parts = ["uv run arc-agent", command]
+    if data_path:
+        parts.extend(["--data", shlex.quote(str(data_path))])
+    if config_path:
+        parts.extend(["--config", shlex.quote(str(config_path))])
+    parts.extend(["--workspace", shlex.quote(str(workspace)), "--resume"])
+    summary["resume_command"] = " ".join(parts)
+    typer.echo(json.dumps(summary, indent=2, sort_keys=True))
+
+
+@app.command("v2-auth-login")
+def v2_auth_login(
+    workspace: Annotated[Path, typer.Option(help="Durable V2 run workspace")] = Path(
+        "runs/v2-main"
+    ),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v2-luna-xhigh.yaml"
+    ),
+) -> None:
+    """Sign this V2 workspace into Codex with a ChatGPT subscription."""
+    from arc_agent.v2_codex import (
+        codex_auth_command,
+        restart_subscription_daemon,
+        subscription_home,
+    )
+    from arc_agent.v2_config import load_v2_config
+
+    settings = load_v2_config(config).openai
+    if settings.auth_mode != "chatgpt_subscription":
+        raise typer.BadParameter("config openai.auth_mode must be chatgpt_subscription")
+    command, environment = codex_auth_command(settings, workspace)
+    typer.echo(f"Codex subscription home: {subscription_home(workspace).resolve()}")
+    completed = subprocess.run(command, env=environment, check=False)
+    if completed.returncode:
+        raise typer.Exit(completed.returncode)
+    restart_subscription_daemon(settings, workspace)
+
+
+@app.command("v2-auth-status")
+def v2_auth_status(
+    workspace: Annotated[Path, typer.Option(help="Durable V2 run workspace")] = Path(
+        "runs/v2-main"
+    ),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v2-luna-xhigh.yaml"
+    ),
+) -> None:
+    """Show the ChatGPT subscription login used by this V2 workspace."""
+    from arc_agent.v2_codex import codex_auth_command
+    from arc_agent.v2_config import load_v2_config
+
+    settings = load_v2_config(config).openai
+    if settings.auth_mode != "chatgpt_subscription":
+        raise typer.BadParameter("config openai.auth_mode must be chatgpt_subscription")
+    command, environment = codex_auth_command(settings, workspace)
+    completed = subprocess.run([*command, "status"], env=environment, check=False)
+    if completed.returncode:
+        raise typer.Exit(completed.returncode)
 
 
 if __name__ == "__main__":
