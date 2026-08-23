@@ -30,6 +30,7 @@ from arc_agent.v2_openai import (
 
 _RESPONSE_PREFIX = "codex-app"
 _ALLOWED_TURN_ITEMS = {"agentMessage", "plan", "reasoning", "userMessage"}
+_MAC_CHATGPT_CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
 _SUBSCRIPTION_INSTRUCTIONS = """Operate as a non-agentic synthesis model.
 Do not call tools, inspect files, browse, use MCP, delegate, or execute commands. The complete
 problem and verifier evidence are in the user message. Return only the JSON object constrained by
@@ -199,6 +200,31 @@ def subscription_home(workspace: str | Path) -> Path:
     return Path(workspace) / ".codex-subscription"
 
 
+def resolve_codex_cli(configured: str) -> str:
+    """Resolve Codex from PATH, an explicit path, or the macOS ChatGPT bundle."""
+    discovered = shutil.which(configured)
+    if discovered is not None:
+        return discovered
+    explicit = Path(configured).expanduser()
+    if (
+        ("/" in configured or "\\" in configured)
+        and explicit.is_file()
+        and os.access(explicit, os.X_OK)
+    ):
+        return str(explicit.resolve())
+    if (
+        configured == "codex"
+        and _MAC_CHATGPT_CODEX.is_file()
+        and os.access(_MAC_CHATGPT_CODEX, os.X_OK)
+    ):
+        return str(_MAC_CHATGPT_CODEX)
+    raise ConfigurationError(
+        f"Codex CLI executable {configured!r} was not found. Install it with the official "
+        "installer or set openai.codex_cli to an executable path.",
+        code="missing_codex_cli",
+    )
+
+
 def codex_isolation_options() -> list[str]:
     return [
         "-c",
@@ -231,12 +257,7 @@ def codex_isolation_options() -> list[str]:
 def codex_auth_command(
     settings: ResponsesConfig, workspace: str | Path
 ) -> tuple[list[str], dict[str, str]]:
-    binary = shutil.which(settings.codex_cli)
-    if binary is None:
-        raise ConfigurationError(
-            f"Codex CLI executable {settings.codex_cli!r} was not found",
-            code="missing_codex_cli",
-        )
+    binary = resolve_codex_cli(settings.codex_cli)
     home = subscription_home(workspace)
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     home.chmod(0o700)
@@ -362,12 +383,7 @@ class CodexAppServerRPC:
         self._send({"method": "initialized"})
 
     def _start_transport(self) -> None:
-        binary = shutil.which(self.settings.codex_cli)
-        if binary is None:
-            raise ConfigurationError(
-                f"Codex CLI executable {self.settings.codex_cli!r} was not found",
-                code="missing_codex_cli",
-            )
+        binary = resolve_codex_cli(self.settings.codex_cli)
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.home.chmod(0o700)
         self.sandbox.mkdir(parents=True, exist_ok=True, mode=0o700)

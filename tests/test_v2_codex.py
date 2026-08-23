@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from arc_agent.v2_codex import CodexSubscriptionClient, _response_id
+from arc_agent import v2_codex
+from arc_agent.v2_codex import CodexSubscriptionClient, _response_id, resolve_codex_cli
 from arc_agent.v2_config import ResponsesConfig
 from arc_agent.v2_models import ResponseUsage
 from arc_agent.v2_openai import (
@@ -186,3 +188,24 @@ def test_codex_usage_limit_failure_is_quota() -> None:
     client = CodexSubscriptionClient(settings=ResponsesConfig(), workspace=Path("run"), rpc=rpc)
     failed = client.retrieve(_response_id("thread-1", "turn-1", "stable-key"))
     assert isinstance(classify_response_failure(failed), QuotaExhausted)
+
+
+def test_codex_cli_resolution_accepts_explicit_executable(tmp_path: Path, monkeypatch) -> None:
+    executable = tmp_path / "codex-custom"
+    executable.write_text("binary")
+    executable.chmod(0o700)
+    monkeypatch.setattr(v2_codex.shutil, "which", lambda _: None)
+
+    assert resolve_codex_cli(str(executable)) == str(executable.resolve())
+
+
+def test_codex_cli_resolution_finds_chatgpt_bundle(tmp_path: Path, monkeypatch) -> None:
+    executable = tmp_path / "ChatGPT.app" / "Contents" / "Resources" / "codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("binary")
+    executable.chmod(0o700)
+    monkeypatch.setattr(v2_codex.shutil, "which", lambda _: None)
+    monkeypatch.setattr(v2_codex, "_MAC_CHATGPT_CODEX", executable)
+
+    assert os.access(executable, os.X_OK)
+    assert resolve_codex_cli("codex") == str(executable)

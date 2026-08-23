@@ -23,6 +23,11 @@ uv run arc-agent v2-build-bank \
   --workspace runs/v2-main
 ```
 
+If `codex` is not on the terminal `PATH`, V2 automatically discovers the executable bundled with
+ChatGPT on macOS at `/Applications/ChatGPT.app/Contents/Resources/codex`. You can also install the
+standalone CLI with OpenAI's [official installer](https://developers.openai.com/codex/cli), or set
+`openai.codex_cli` in the configuration to an explicit executable path.
+
 The command is idempotently resumable. It records a prepared request before submission, stores a
 Codex thread checkpoint before starting the turn, assigns the request key as the persisted client
 message ID, and ingests each completed turn exactly once. The workspace-scoped App Server daemon

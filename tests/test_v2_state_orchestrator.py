@@ -40,6 +40,24 @@ def _completed(
     )
 
 
+def _failed_quota(response_id: str = "resp_quota") -> ResponseSnapshot:
+    body = {
+        "id": response_id,
+        "status": "failed",
+        "error": {
+            "message": "You've hit your usage limit.",
+            "code": "usageLimitExceeded",
+        },
+        "usage": {},
+    }
+    return ResponseSnapshot(
+        response_id=response_id,
+        status="failed",
+        body=body,
+        usage=ResponseUsage(),
+    )
+
+
 class ScriptedClient:
     def __init__(self, events: list[object]) -> None:
         self.events = list(events)
@@ -146,6 +164,47 @@ def test_quota_pause_resumes_same_task_and_request(tmp_path: Path, identity_task
         assert state.active_task("training") is None
         assert len(state.list_programs()) == 1
         assert state.get_meta("training_quota_pause_count") == 1
+
+
+def test_terminal_quota_response_is_retired_before_fresh_resume(
+    tmp_path: Path, identity_task: ArcTask
+) -> None:
+    workspace = tmp_path / "run"
+    failed = _failed_quota()
+    with V2State(workspace) as state:
+        result = V2Orchestrator(
+            _config(), state, client=ScriptedClient([failed]), sleep=lambda _: None
+        ).build_bank([identity_task], dataset_hash="data", finalize=False)
+        assert result.status == "paused_quota"
+        paused = state.pending_request("training", identity_task.task_id)
+        assert paused is not None
+        assert paused["response_id"] == failed.response_id
+        old_key = paused["request_key"]
+
+    resumed_client = ScriptedClient([failed, _completed("resp_after_reset")])
+    with V2State(workspace) as state:
+        result = V2Orchestrator(
+            _config(), state, client=resumed_client, sleep=lambda _: None
+        ).build_bank(
+            [identity_task],
+            dataset_hash="data",
+            resume_only=True,
+            finalize=False,
+        )
+        assert result.status == "complete"
+        retired = state.connection.execute(
+            "SELECT ingested, status FROM requests WHERE request_key=?", (old_key,)
+        ).fetchone()
+        assert retired["ingested"] == 1
+        assert retired["status"] == "failed"
+        requests = state.connection.execute(
+            "SELECT request_key, round_index FROM requests ORDER BY created_at"
+        ).fetchall()
+        assert len(requests) == 2
+        assert requests[1]["request_key"] != old_key
+        assert requests[1]["round_index"] == 1
+        assert resumed_client.request_keys == [requests[1]["request_key"]]
+        assert state.active_task("training") is None
 
 
 def test_completed_uningested_response_resumes_without_new_api_call(

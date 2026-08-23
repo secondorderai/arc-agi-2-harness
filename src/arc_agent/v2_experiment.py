@@ -154,6 +154,7 @@ class V2Orchestrator:
     def _obtain_response(self, request: dict[str, Any]) -> ResponseSnapshot | None:
         phase = str(request["phase"])
         request_key = str(request["request_key"])
+        resuming_quota_failure = request.get("status") == "paused_quota"
         retry_delay = min(
             self.config.openai.retry_max_seconds,
             self.config.openai.retry_initial_seconds
@@ -192,6 +193,23 @@ class V2Orchestrator:
                     continue
                 if snapshot.status == "failed":
                     error = classify_response_failure(snapshot)
+                    if isinstance(error, QuotaExhausted) and resuming_quota_failure:
+                        # A terminal Codex turn cannot change after the account quota
+                        # becomes available again.  Preserve that failed response, retire
+                        # its request, and start a fresh chain on the next loop iteration
+                        # instead of replaying the same immutable failure forever.
+                        self.state.mark_request_ingested(request_key)
+                        task = self.state.task_row(phase, str(request["task_id"]))
+                        self.state.update_task(
+                            phase,
+                            str(request["task_id"]),
+                            round_index=max(
+                                int(task["round_index"]),
+                                int(request["round_index"]) + 1,
+                            ),
+                            previous_response_id=None,
+                        )
+                        return None
                     if isinstance(error, (QuotaExhausted, ConfigurationError)):
                         self._pause_for_error(phase, request_key, error)
                     self.state.record_request_error(request_key, "failed", str(error))
