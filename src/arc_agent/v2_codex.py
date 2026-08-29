@@ -29,7 +29,13 @@ from arc_agent.v2_openai import (
 )
 
 _RESPONSE_PREFIX = "codex-app"
-_ALLOWED_TURN_ITEMS = {"agentMessage", "plan", "reasoning", "userMessage"}
+_ALLOWED_TURN_ITEMS = {
+    "agentMessage",
+    "contextCompaction",
+    "plan",
+    "reasoning",
+    "userMessage",
+}
 _MAC_CHATGPT_CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
 _SUBSCRIPTION_INSTRUCTIONS = """Operate as a non-agentic synthesis model.
 Do not call tools, inspect files, browse, use MCP, delegate, or execute commands. The complete
@@ -37,6 +43,7 @@ problem and verifier evidence are in the user message. Return only the JSON obje
 the supplied output schema. Never mention or infer evaluation labels that are not in the message.
 """
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_DAEMON_START_LOCK = threading.Lock()
 
 
 class _UnixWebSocket:
@@ -426,45 +433,48 @@ class CodexAppServerRPC:
         options: list[str],
         environment: dict[str, str],
     ) -> Path:
-        socket_path, pid_path, log_path = _daemon_paths(self.home)
-        if _owned_daemon_pid(self.home) is not None:
-            return socket_path
-        _clear_stale_daemon_files(self.home)
-        listen = f"unix://{socket_path.resolve()}"
-        try:
-            with log_path.open("a") as log:
-                daemon = subprocess.Popen(
-                    [binary, "app-server", "--listen", listen, *options],
-                    cwd=self.sandbox,
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    start_new_session=True,
-                    close_fds=True,
-                )
-            pid_path.write_text(str(daemon.pid))
-            pid_path.chmod(0o600)
-        except OSError as exc:
-            raise ConfigurationError(f"failed to launch workspace Codex App Server: {exc}") from exc
-        deadline = time.monotonic() + self.settings.request_timeout_seconds
-        while time.monotonic() < deadline:
-            if socket_path.exists():
+        with _DAEMON_START_LOCK:
+            socket_path, pid_path, log_path = _daemon_paths(self.home)
+            if _owned_daemon_pid(self.home) is not None:
                 return socket_path
-            if daemon.poll() is not None:
-                detail = ""
-                with suppress(OSError, UnicodeError):
-                    detail = log_path.read_text()[-2_000:]
-                _clear_stale_daemon_files(self.home)
+            _clear_stale_daemon_files(self.home)
+            listen = f"unix://{socket_path.resolve()}"
+            try:
+                with log_path.open("a") as log:
+                    daemon = subprocess.Popen(
+                        [binary, "app-server", "--listen", listen, *options],
+                        cwd=self.sandbox,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        start_new_session=True,
+                        close_fds=True,
+                    )
+                pid_path.write_text(str(daemon.pid))
+                pid_path.chmod(0o600)
+            except OSError as exc:
                 raise ConfigurationError(
-                    f"workspace Codex App Server exited during startup: {detail}",
-                    code="codex_daemon_start",
-                )
-            time.sleep(0.05)
-        daemon.terminate()
-        _clear_stale_daemon_files(self.home)
-        raise TransientAPIError("workspace Codex App Server socket did not become ready")
+                    f"failed to launch workspace Codex App Server: {exc}"
+                ) from exc
+            deadline = time.monotonic() + self.settings.request_timeout_seconds
+            while time.monotonic() < deadline:
+                if socket_path.exists():
+                    return socket_path
+                if daemon.poll() is not None:
+                    detail = ""
+                    with suppress(OSError, UnicodeError):
+                        detail = log_path.read_text()[-2_000:]
+                    _clear_stale_daemon_files(self.home)
+                    raise ConfigurationError(
+                        f"workspace Codex App Server exited during startup: {detail}",
+                        code="codex_daemon_start",
+                    )
+                time.sleep(0.05)
+            daemon.terminate()
+            _clear_stale_daemon_files(self.home)
+            raise TransientAPIError("workspace Codex App Server socket did not become ready")
 
     def _send(self, payload: dict[str, Any]) -> None:
         serialized = json.dumps(payload, separators=(",", ":"))
@@ -712,6 +722,11 @@ def _turn_text(turn: dict[str, Any]) -> str:
                 f"subscription synthesis attempted forbidden external item {item_type!r}",
                 code="eval_isolation_violation",
             )
+        # App Server emits contextCompaction as internal conversation-history
+        # bookkeeping.  It carries no candidate text and performs no external
+        # action, so retain the turn while intentionally ignoring the item.
+        if item_type == "contextCompaction":
+            continue
         if item_type == "agentMessage" and item.get("phase") in {None, "final_answer"}:
             chunks.append(str(item.get("text") or ""))
     return "".join(chunks)
@@ -742,7 +757,7 @@ class CodexSubscriptionClient:
         self.settings = settings
         self.workspace = workspace
         self._rpc = rpc
-        self._ready = False
+        self._ready_models: set[str] = set()
         self._loaded_threads: set[str] = set()
 
     @property
@@ -751,7 +766,7 @@ class CodexSubscriptionClient:
             with suppress(Exception):
                 self._rpc.close()
             self._rpc = None
-            self._ready = False
+            self._ready_models.clear()
             self._loaded_threads.clear()
         if self._rpc is None:
             self._rpc = CodexAppServerRPC(self.settings, self.workspace)
@@ -770,13 +785,13 @@ class CodexSubscriptionClient:
                 rpc.close()
             if self._rpc is rpc:
                 self._rpc = None
-                self._ready = False
+                self._ready_models.clear()
                 self._loaded_threads.clear()
             raise
 
-    def _ensure_ready(self) -> None:
+    def _ensure_ready(self, model: str) -> None:
         _ = self.rpc
-        if self._ready:
+        if model in self._ready_models:
             self._check_quota()
             return
         account_result = self._request("account/read", {"refreshToken": True})
@@ -794,13 +809,13 @@ class CodexSubscriptionClient:
             (
                 row
                 for row in available
-                if row.get("id") == self.settings.model or row.get("model") == self.settings.model
+                if row.get("id") == model or row.get("model") == model
             ),
             None,
         )
         if selected is None:
             raise ConfigurationError(
-                f"ChatGPT subscription does not expose {self.settings.model}",
+                f"ChatGPT subscription does not expose {model}",
                 code="unsupported_subscription_model",
             )
         efforts = {
@@ -810,7 +825,7 @@ class CodexSubscriptionClient:
         }
         if self.settings.reasoning_effort not in efforts:
             raise ConfigurationError(
-                f"{self.settings.model} does not expose {self.settings.reasoning_effort} effort",
+                f"{model} does not expose {self.settings.reasoning_effort} effort",
                 code="unsupported_reasoning_effort",
             )
         limits = self._request("account/rateLimits/read", None)
@@ -822,7 +837,7 @@ class CodexSubscriptionClient:
                     break
         elif isinstance(limits.get("rateLimits"), dict):
             self.rpc.latest_rate_limits = limits["rateLimits"]
-        self._ready = True
+        self._ready_models.add(model)
         self._check_quota()
 
     def _check_quota(self) -> None:
@@ -837,9 +852,9 @@ class CodexSubscriptionClient:
             code=str(limits.get("rateLimitReachedType")),
         )
 
-    def _thread_params(self) -> dict[str, Any]:
+    def _thread_params(self, model: str) -> dict[str, Any]:
         return {
-            "model": self.settings.model,
+            "model": model,
             "cwd": str((subscription_home(self.workspace) / "model-sandbox").resolve()),
             "approvalPolicy": "never",
             "sandbox": "read-only",
@@ -848,17 +863,19 @@ class CodexSubscriptionClient:
             "developerInstructions": _SUBSCRIPTION_INSTRUCTIONS,
         }
 
-    def _resume_thread(self, thread_id: str) -> dict[str, Any]:
-        result = self._request("thread/resume", {"threadId": thread_id, **self._thread_params()})
+    def _resume_thread(self, thread_id: str, model: str) -> dict[str, Any]:
+        result = self._request(
+            "thread/resume", {"threadId": thread_id, **self._thread_params(model)}
+        )
         self._loaded_threads.add(thread_id)
         thread = result.get("thread")
         if not isinstance(thread, dict):
             raise ResponseExpired(f"Codex thread {thread_id} could not be resumed")
         return thread
 
-    def _read_thread(self, thread_id: str) -> dict[str, Any]:
+    def _read_thread(self, thread_id: str, model: str) -> dict[str, Any]:
         if thread_id not in self._loaded_threads:
-            return self._resume_thread(thread_id)
+            return self._resume_thread(thread_id, model)
         result = self._request("thread/read", {"threadId": thread_id, "includeTurns": True})
         thread = result.get("thread")
         if not isinstance(thread, dict):
@@ -872,6 +889,7 @@ class CodexSubscriptionClient:
         prompt: str,
         request_key: str,
         token_limit: int,
+        model: str,
     ) -> ResponseSnapshot:
         result = self._request(
             "turn/start",
@@ -879,7 +897,7 @@ class CodexSubscriptionClient:
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": prompt}],
                 "effort": self.settings.reasoning_effort,
-                "model": self.settings.model,
+                "model": model,
                 "clientUserMessageId": request_key,
                 "outputSchema": PROGRAM_SCHEMA,
                 "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
@@ -908,15 +926,17 @@ class CodexSubscriptionClient:
         max_output_tokens: int,
         previous_response_id: str | None,
         request_key: str,
+        model: str | None = None,
         checkpoint: Callable[[ResponseSnapshot], None] | None = None,
     ) -> ResponseSnapshot:
         del task_id, phase, round_index
-        self._ensure_ready()
+        selected_model = model or self.settings.model
+        self._ensure_ready(selected_model)
         if previous_response_id:
             thread_id, _, _ = _parse_response_id(previous_response_id)
-            self._resume_thread(thread_id)
+            self._resume_thread(thread_id, selected_model)
         else:
-            result = self._request("thread/start", self._thread_params())
+            result = self._request("thread/start", self._thread_params(selected_model))
             thread = result.get("thread")
             if not isinstance(thread, dict) or not thread.get("id"):
                 raise TransientAPIError("Codex thread/start did not return a thread id")
@@ -937,6 +957,7 @@ class CodexSubscriptionClient:
             prompt=prompt,
             request_key=request_key,
             token_limit=max_output_tokens,
+            model=selected_model,
         )
 
     def retrieve(
@@ -945,9 +966,10 @@ class CodexSubscriptionClient:
         *,
         request: dict[str, Any] | None = None,
     ) -> ResponseSnapshot:
-        self._ensure_ready()
+        selected_model = str((request or {}).get("model") or self.settings.model)
+        self._ensure_ready(selected_model)
         thread_id, turn_id, request_key = _parse_response_id(response_id)
-        thread = self._read_thread(thread_id)
+        thread = self._read_thread(thread_id, selected_model)
         if turn_id == "pending":
             existing = _find_turn_by_client_id(thread, request_key)
             if existing is None:
@@ -958,6 +980,7 @@ class CodexSubscriptionClient:
                     prompt=str(request["prompt"]),
                     request_key=request_key,
                     token_limit=int(request["token_limit"]),
+                    model=selected_model,
                 )
             turn_id = str(existing["id"])
         turn = next(
@@ -1012,5 +1035,5 @@ class CodexSubscriptionClient:
         if self._rpc is not None:
             self._rpc.close()
             self._rpc = None
-        self._ready = False
+        self._ready_models.clear()
         self._loaded_threads.clear()

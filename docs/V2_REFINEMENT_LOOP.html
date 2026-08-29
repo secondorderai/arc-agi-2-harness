@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>V2 Program Refinement Loop</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: light-dark(#f7f8fa, #101216);
+      --surface: light-dark(#ffffff, #181b21);
+      --surface-2: light-dark(#f0f3f7, #20242c);
+      --text: light-dark(#18202b, #eef2f8);
+      --muted: light-dark(#617083, #a8b3c2);
+      --line: light-dark(#c9d2de, #3a4351);
+      --det: light-dark(#1769aa, #72b7ed);
+      --det-soft: light-dark(#e9f4fc, #132a3a);
+      --llm: light-dark(#7048b8, #ba9bea);
+      --llm-soft: light-dark(#f3edfc, #2b203d);
+      --state: light-dark(#16744a, #6bd3a3);
+      --state-soft: light-dark(#e9f7f0, #153329);
+      --warn: light-dark(#a14d00, #f3a45b);
+      --warn-soft: light-dark(#fff3e7, #3b2919);
+      --ok: light-dark(#11743b, #68d391);
+      --ok-soft: light-dark(#e9f8ef, #173425);
+      --shadow: light-dark(0 16px 40px rgb(20 32 48 / 10%), 0 16px 42px rgb(0 0 0 / 30%));
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--page);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 42px 0 56px;
+    }
+
+    header {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 {
+      font-size: clamp(1.7rem, 4vw, 2.6rem);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+      font-weight: 650;
+    }
+
+    header p {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 1rem;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .toolbar-label {
+      color: var(--muted);
+      font-size: 0.86rem;
+      margin-right: 4px;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+      cursor: pointer;
+    }
+
+    button:hover { border-color: var(--det); }
+    button:focus-visible { outline: 3px solid color-mix(in srgb, var(--det) 35%, transparent); }
+    button[aria-pressed="true"] { background: var(--text); color: var(--page); border-color: var(--text); }
+
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .lane-key {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .key-item { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot.det { background: var(--det); }
+    .dot.llm { background: var(--llm); }
+    .dot.state { background: var(--state); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 58px minmax(0, 1fr) 58px minmax(0, 1fr);
+      gap: 0;
+      padding: 28px;
+      align-items: stretch;
+    }
+
+    .node {
+      position: relative;
+      min-height: 178px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      background: var(--surface);
+      transition: opacity 180ms ease, transform 180ms ease, border-color 180ms ease;
+    }
+
+    .node[data-owner="deterministic"] { border-top: 4px solid var(--det); }
+    .node[data-owner="llm"] { border-top: 4px solid var(--llm); }
+    .node[data-owner="state"] { border-top: 4px solid var(--state); }
+    .node.is-dimmed { opacity: 0.24; transform: scale(0.985); }
+
+    .step {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 0.76rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .step::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .node[data-owner="deterministic"] .step { color: var(--det); }
+    .node[data-owner="llm"] .step { color: var(--llm); }
+    .node[data-owner="state"] .step { color: var(--state); }
+
+    .node h2 {
+      margin-top: 9px;
+      font-size: 1.08rem;
+      font-weight: 650;
+    }
+
+    .node p {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 0.87rem;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    .chip {
+      padding: 4px 8px;
+      border-radius: 7px;
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 0.75rem;
+      line-height: 1.25;
+    }
+
+    .arrow {
+      display: grid;
+      place-items: center;
+      color: var(--line);
+      font-size: 1.6rem;
+      user-select: none;
+    }
+
+    .arrow::before { content: "→"; }
+
+    .verification {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: 1.15fr 1.85fr;
+      gap: 18px;
+      margin-top: 22px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    .guards {
+      min-height: auto;
+      background: var(--det-soft);
+    }
+
+    .guard-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+      margin-top: 14px;
+    }
+
+    .guard {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+
+    .guard::before { content: "✓"; color: var(--det); font-weight: 700; }
+
+    .decision {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .branch {
+      min-height: 172px;
+      padding: 15px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+    }
+
+    .branch h3 { font-size: 0.9rem; font-weight: 650; }
+    .branch p { margin-top: 6px; color: var(--muted); font-size: 0.78rem; }
+    .branch strong { display: block; margin-top: 11px; font-size: 0.78rem; }
+    .branch.pass { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+    .branch.retry { background: var(--llm-soft); border-color: color-mix(in srgb, var(--llm) 40%, var(--line)); }
+    .branch.reset { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+
+    .loop {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 14px;
+      align-items: center;
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: var(--state-soft);
+      color: var(--state);
+      font-size: 0.83rem;
+      font-weight: 600;
+      text-align: center;
+    }
+
+    .loop .loop-arrow { font-size: 1.35rem; }
+
+    .exceptions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      padding: 0 28px 28px;
+    }
+
+    .exception {
+      padding: 14px 16px;
+      border-left: 4px solid var(--warn);
+      background: var(--surface-2);
+      border-radius: 0 12px 12px 0;
+    }
+
+    .exception h3 { font-size: 0.86rem; }
+    .exception p { margin-top: 4px; color: var(--muted); font-size: 0.79rem; }
+
+    .footer-note {
+      padding: 17px 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-align: center;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text);
+    }
+
+    @media (max-width: 860px) {
+      .flow { grid-template-columns: 1fr; gap: 10px; padding: 20px; }
+      .arrow { min-height: 30px; }
+      .arrow::before { content: "↓"; }
+      .verification { grid-template-columns: 1fr; margin-top: 4px; }
+      .decision { grid-template-columns: 1fr; }
+      .node, .branch { min-height: auto; }
+      .exceptions { grid-template-columns: 1fr; padding: 0 20px 20px; }
+    }
+
+    @media (max-width: 520px) {
+      main { width: min(100% - 20px, 1180px); padding-top: 24px; }
+      .lane-key { gap: 10px 15px; }
+      .flow { padding: 14px; }
+      .guard-list { grid-template-columns: 1fr; }
+      .loop { grid-template-columns: 1fr; gap: 5px; }
+      .loop .loop-arrow { transform: rotate(90deg); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .node { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>V2 program refinement loop</h1>
+      <p>The LLM proposes and repairs Python. Deterministic code owns task state, verification, scoring, retries, and the decision to advance.</p>
+      <div class="toolbar" aria-label="Highlight diagram ownership">
+        <span class="toolbar-label">Highlight ownership</span>
+        <button type="button" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" data-filter="deterministic" aria-pressed="false">Deterministic controller</button>
+        <button type="button" data-filter="llm" aria-pressed="false">Luna LLM</button>
+        <button type="button" data-filter="state" aria-pressed="false">Durable state</button>
+      </div>
+    </header>
+
+    <section class="diagram" aria-label="Program synthesis refinement flow">
+      <div class="lane-key" aria-label="Ownership legend">
+        <span class="key-item"><span class="dot det"></span>Deterministic Python</span>
+        <span class="key-item"><span class="dot llm"></span>GPT-5.6 Luna</span>
+        <span class="key-item"><span class="dot state"></span>SQLite checkpoint</span>
+      </div>
+
+      <div class="flow">
+        <article class="node" data-owner="state">
+          <span class="step">1 · Load state</span>
+          <h2>Active game + checkpoint</h2>
+          <p>Resume the exact task, round, lens, best candidate, prior response chain, and usage ledger.</p>
+          <div class="chips">
+            <span class="chip">task cursor</span>
+            <span class="chip">best score</span>
+            <span class="chip">response ID</span>
+            <span class="chip">no-progress count</span>
+          </div>
+        </article>
+
+        <div class="arrow" aria-hidden="true"></div>
+
+        <article class="node" data-owner="deterministic">
+          <span class="step">2 · Build prompt</span>
+          <h2>Assemble refinement packet</h2>
+          <p>Combine demonstrations, unlabelled test inputs, retrieved programs, current lens, and exact verifier feedback.</p>
+          <div class="chips">
+            <span class="chip">best prior source</span>
+            <span class="chip">actual / expected grids</span>
+            <span class="chip">cell diffs</span>
+            <span class="chip">search lens</span>
+          </div>
+        </article>
+
+        <div class="arrow" aria-hidden="true"></div>
+
+        <article class="node" data-owner="llm">
+          <span class="step">3 · Synthesize</span>
+          <h2>Luna proposes a program</h2>
+          <p>The model infers a rule or repairs the prior program and returns strict structured output.</p>
+          <div class="chips">
+            <span class="chip">hypothesis</span>
+            <span class="chip">strategy tags</span>
+            <span class="chip">invariants</span>
+            <span class="chip"><code>python_source</code></span>
+          </div>
+        </article>
+
+        <div class="verification">
+          <article class="node guards" data-owner="deterministic">
+            <span class="step">4 · Execute locally</span>
+            <h2>Sandbox + exact verifier</h2>
+            <p>The verifier never asks the model whether its answer is correct.</p>
+            <div class="guard-list">
+              <span class="guard">Static safety</span>
+              <span class="guard">Full demonstrations</span>
+              <span class="guard">Labelled source tests</span>
+              <span class="guard">Leave-one-out</span>
+              <span class="guard">8 D4 transforms</span>
+              <span class="guard">Up to 4 colour permutations</span>
+              <span class="guard">Valid output grid</span>
+              <span class="guard">Resource limits</span>
+            </div>
+          </article>
+
+          <section class="decision" aria-label="Deterministic decision branches">
+            <article class="branch pass node" data-owner="deterministic">
+              <h3>All cases exact</h3>
+              <p><code>accepted = true</code></p>
+              <strong>Save verified program → advance to the next game</strong>
+            </article>
+            <article class="branch retry node" data-owner="deterministic">
+              <h3>Rejected, but improving</h3>
+              <p>Score increases, so the best candidate is replaced and no-progress returns to zero.</p>
+              <strong>Continue the same response chain → prompt again</strong>
+            </article>
+            <article class="branch reset node" data-owner="deterministic">
+              <h3>3 non-improving rounds</h3>
+              <p>Duplicates and lower/equal scores count toward the reset threshold.</p>
+              <strong>Fresh chain + next lens → prompt again</strong>
+            </article>
+          </section>
+        </div>
+
+        <div class="loop" data-owner="state">
+          <span>Persist candidate, verification packet, score, response IDs, usage, and cursor</span>
+          <span class="loop-arrow" aria-hidden="true">↻</span>
+          <span>Repeat without a round or time ceiling until exact acceptance</span>
+        </div>
+      </div>
+
+      <div class="exceptions">
+        <article class="exception">
+          <h3>Incomplete model output</h3>
+          <p>Escalate deterministically through <code>32,768 → 65,536 → 128,000</code> output tokens, then continue.</p>
+        </article>
+        <article class="exception">
+          <h3>Quota or interruption</h3>
+          <p>Commit the current request and pause. A later <code>--resume</code> reloads the checkpoint instead of skipping the game.</p>
+        </article>
+      </div>
+
+      <p class="footer-note">The score chooses the best candidate; it never overrides the exact acceptance gate.</p>
+    </section>
+  </main>
+
+  <script>
+    const buttons = Array.from(document.querySelectorAll('[data-filter]'));
+    const nodes = Array.from(document.querySelectorAll('[data-owner]'));
+
+    function setFilter(filter) {
+      buttons.forEach((button) => {
+        button.setAttribute('aria-pressed', String(button.dataset.filter === filter));
+      });
+      nodes.forEach((node) => {
+        node.classList.toggle('is-dimmed', filter !== 'all' && node.dataset.owner !== filter);
+      });
+    }
+
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => setFilter(button.dataset.filter));
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+  <title>V2 Compatibility Matrix &amp; Ranker</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: light-dark(#f5f7fb, #0b0f17);
+      --surface: light-dark(#ffffff, #131925);
+      --surface-2: light-dark(#eef2f8, #1a2231);
+      --text: light-dark(#152033, #ecf2ff);
+      --muted: light-dark(#60708a, #a8b5ca);
+      --line: light-dark(#d9e0eb, #2b374c);
+      --blue: light-dark(#1769e0, #74a8ff);
+      --blue-soft: light-dark(#e8f1ff, #142a4b);
+      --green: light-dark(#087b49, #54d79a);
+      --green-soft: light-dark(#e5f7ef, #123629);
+      --orange: light-dark(#a64a00, #ffad68);
+      --orange-soft: light-dark(#fff0e4, #40291a);
+      --purple: light-dark(#6e43c4, #bd9bff);
+      --purple-soft: light-dark(#f0eaff, #2d2345);
+      --red: light-dark(#b42318, #ff8c86);
+      --red-soft: light-dark(#ffebe9, #3b2022);
+      --shadow: light-dark(0 12px 32px rgba(34, 55, 88, .10), 0 16px 38px rgba(0, 0, 0, .30));
+      --radius: 18px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--blue) 10%, transparent), transparent 30rem),
+        radial-gradient(circle at 90% 8%, color-mix(in srgb, var(--purple) 9%, transparent), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.45;
+    }
+
+    button { font: inherit; }
+    button:focus-visible { outline: 3px solid color-mix(in srgb, var(--blue) 48%, transparent); outline-offset: 3px; }
+
+    .app { width: min(1480px, 100%); margin: 0 auto; padding: 28px; }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(260px, .72fr);
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 22px;
+    }
+    .eyebrow {
+      color: var(--blue);
+      font-family: var(--mono);
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 7px 0 10px; font-size: clamp(2rem, 4.5vw, 4.5rem); line-height: 1.02; letter-spacing: -.045em; }
+    .lead { max-width: 860px; margin: 0; color: var(--muted); font-size: clamp(1rem, 1.8vw, 1.25rem); }
+
+    .hero-metric {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--surface) 92%, transparent);
+      box-shadow: var(--shadow);
+    }
+    .hero-metric strong { display: block; margin: 2px 0 4px; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1; letter-spacing: -.04em; }
+    .hero-metric span { color: var(--muted); }
+
+    .stage-nav {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 18px 0 24px;
+    }
+    .stage-button {
+      display: flex;
+      min-height: 68px;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 15px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--surface) 88%, transparent);
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+    .stage-button:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--blue) 45%, var(--line)); }
+    .stage-button[aria-selected="true"] { border-color: var(--blue); background: var(--blue-soft); }
+    .stage-number {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      flex: 0 0 34px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--surface-2);
+      color: var(--blue);
+      font-family: var(--mono);
+      font-weight: 800;
+    }
+    .stage-button[aria-selected="true"] .stage-number { background: var(--blue); color: light-dark(#fff, #07101e); }
+    .stage-button b { display: block; font-size: .96rem; }
+    .stage-button small { display: block; margin-top: 2px; color: var(--muted); }
+
+    .stage-panel { display: none; }
+    .stage-panel.active { display: block; animation: enter .2s ease-out; }
+    @keyframes enter { from { opacity: .4; transform: translateY(6px); } }
+
+    .diagram-shell {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: color-mix(in srgb, var(--surface) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+    .diagram-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 22px 24px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .diagram-header h2 { margin: 4px 0 4px; font-size: 1.35rem; }
+    .diagram-header p { max-width: 780px; margin: 0; color: var(--muted); }
+    .status-chip {
+      flex: 0 0 auto;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: .75rem;
+      font-weight: 700;
+    }
+
+    .diagram-body { padding: 24px; }
+    .two-col { display: grid; grid-template-columns: minmax(300px, .9fr) minmax(0, 1.5fr); gap: 26px; align-items: stretch; }
+
+    .matrix-visual {
+      position: relative;
+      min-height: 450px;
+      padding: 48px 18px 18px 54px;
+      border-radius: 16px;
+      background: var(--surface-2);
+    }
+    .axis-label { position: absolute; color: var(--muted); font-family: var(--mono); font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+    .axis-label.top { top: 15px; left: 54px; right: 18px; text-align: center; }
+    .axis-label.left { top: 48px; bottom: 18px; left: 13px; display: grid; place-items: center; writing-mode: vertical-rl; transform: rotate(180deg); }
+    .matrix-grid { display: grid; height: 100%; min-height: 380px; grid-template-columns: repeat(14, 1fr); grid-template-rows: repeat(12, 1fr); gap: 4px; }
+    .matrix-cell {
+      min-width: 0;
+      border: 0;
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--muted) 16%, transparent);
+      cursor: pointer;
+      transition: transform .12s ease, background .12s ease;
+    }
+    .matrix-cell:hover, .matrix-cell:focus-visible { transform: scale(1.22); z-index: 2; }
+    .matrix-cell.exact { background: var(--green); }
+    .matrix-cell.partial { background: var(--orange); opacity: .72; }
+    .matrix-cell.selected { box-shadow: 0 0 0 3px var(--text); }
+    .matrix-key { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 13px; color: var(--muted); font-size: .82rem; }
+    .key-item { display: inline-flex; align-items: center; gap: 6px; }
+    .key-dot { width: 10px; height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 16%, transparent); }
+    .key-dot.exact { background: var(--green); }
+    .key-dot.partial { background: var(--orange); opacity: .72; }
+
+    .flow-stack { display: grid; gap: 12px; align-content: start; }
+    .node {
+      width: 100%;
+      padding: 16px 17px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      transition: transform .15s ease, border-color .15s ease, background .15s ease;
+    }
+    .node:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--blue) 45%, var(--line)); }
+    .node.selected { border-color: var(--blue); background: var(--blue-soft); }
+    .node .node-title { display: flex; justify-content: space-between; gap: 12px; align-items: center; font-weight: 750; }
+    .node .node-title code { color: var(--blue); font-size: .78rem; }
+    .node p { margin: 5px 0 0; color: var(--muted); font-size: .89rem; }
+    .node.green { border-left: 5px solid var(--green); }
+    .node.orange { border-left: 5px solid var(--orange); }
+    .node.purple { border-left: 5px solid var(--purple); }
+    .node.red { border-left: 5px solid var(--red); }
+    .arrow-down { height: 18px; display: grid; place-items: center; color: var(--muted); font-size: 1.2rem; }
+
+    .model-flow { display: grid; grid-template-columns: 1.15fr 34px .72fr 34px 1.05fr 34px .75fr; gap: 7px; align-items: stretch; }
+    .feature-stack { display: grid; gap: 10px; }
+    .model-arrow { display: grid; place-items: center; color: var(--muted); font-size: 1.4rem; }
+    .model-block {
+      display: grid;
+      min-height: 214px;
+      align-content: center;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface-2);
+      text-align: center;
+    }
+    .model-block.clickable { cursor: pointer; }
+    .model-block.clickable:hover, .model-block.clickable.selected { border-color: var(--blue); background: var(--blue-soft); }
+    .model-block .big { display: block; margin: 4px 0; font-family: var(--mono); font-size: clamp(1.35rem, 3vw, 2.35rem); font-weight: 850; letter-spacing: -.04em; }
+    .model-block p { margin: 5px 0 0; color: var(--muted); font-size: .86rem; }
+    .model-block ul { margin: 9px 0 0; padding: 0; list-style: none; color: var(--muted); font-family: var(--mono); font-size: .77rem; text-align: left; }
+    .model-block li + li { margin-top: 4px; }
+    .feature-card {
+      min-height: 0;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface-2);
+      text-align: left;
+    }
+    .feature-card strong { display: block; }
+    .feature-card span { color: var(--muted); font-family: var(--mono); font-size: .76rem; }
+    .feature-card.blue { border-left: 5px solid var(--blue); }
+    .feature-card.purple { border-left: 5px solid var(--purple); }
+    .feature-card.orange { border-left: 5px solid var(--orange); }
+
+    .training-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 22px; }
+    .mini-step { position: relative; padding: 13px; border-top: 3px solid var(--line); background: var(--surface-2); }
+    .mini-step:not(:last-child)::after { content: "→"; position: absolute; right: -9px; top: 35%; z-index: 2; color: var(--muted); }
+    .mini-step b { display: block; font-size: .86rem; }
+    .mini-step span { display: block; margin-top: 3px; color: var(--muted); font-size: .76rem; }
+
+    .eval-flow { display: grid; grid-template-columns: minmax(180px, .7fr) 42px minmax(0, 1.4fr) 42px minmax(190px, .75fr); gap: 8px; align-items: center; }
+    .branch-box { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-2); }
+    .branch-label { display: flex; justify-content: space-between; gap: 10px; align-items: center; font-weight: 800; }
+    .branch-label span { color: var(--muted); font-family: var(--mono); font-size: .72rem; font-weight: 600; }
+    .merge-stack { display: grid; gap: 12px; }
+    .label-gate { margin-top: 20px; padding: 14px 16px; border: 1px dashed var(--red); border-radius: 14px; background: var(--red-soft); color: var(--red); text-align: center; font-weight: 750; }
+    .label-gate small { display: block; margin-top: 4px; font-weight: 500; }
+
+    .inspector {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr) minmax(220px, .6fr);
+      gap: 20px;
+      align-items: start;
+      margin-top: 18px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+    }
+    .inspector-label { color: var(--blue); font-family: var(--mono); font-size: .76rem; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
+    .inspector h3 { margin: 3px 0 5px; font-size: 1.04rem; }
+    .inspector p { margin: 0; color: var(--muted); }
+    .impact { padding-left: 18px; border-left: 3px solid var(--green); }
+    .impact b { display: block; margin-bottom: 4px; color: var(--green); }
+
+    .score-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 22px; }
+    .score-card { padding: 17px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--surface) 90%, transparent); }
+    .score-card b { display: block; margin-bottom: 5px; }
+    .score-card p { margin: 0; color: var(--muted); font-size: .86rem; }
+    .score-card .accent { color: var(--green); }
+    .score-card .caveat { color: var(--orange); }
+
+    .footer-note { margin: 20px 2px 0; color: var(--muted); font-size: .82rem; text-align: center; }
+    code { font-family: var(--mono); }
+
+    @media (max-width: 1060px) {
+      .model-flow { grid-template-columns: 1fr; }
+      .model-arrow { min-height: 26px; transform: rotate(90deg); }
+      .model-block { min-height: 0; }
+      .eval-flow { grid-template-columns: 1fr; }
+      .eval-flow > .model-arrow { transform: rotate(90deg); }
+    }
+    @media (max-width: 820px) {
+      .app { padding: 18px; }
+      .hero, .two-col, .inspector { grid-template-columns: 1fr; }
+      .stage-nav { grid-template-columns: 1fr; }
+      .training-strip, .score-grid { grid-template-columns: repeat(2, 1fr); }
+      .mini-step:not(:last-child)::after { display: none; }
+      .matrix-visual { min-height: 390px; }
+    }
+    @media (max-width: 520px) {
+      .app { padding: 12px; }
+      .diagram-header { flex-direction: column; padding: 18px; }
+      .diagram-body { padding: 14px; }
+      .training-strip, .score-grid { grid-template-columns: 1fr; }
+      .matrix-visual { min-height: 330px; padding-left: 46px; }
+      .matrix-grid { min-height: 270px; gap: 3px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="hero">
+      <div>
+        <div class="eyebrow">ARC-AGI-2 · V2 local adaptation layer</div>
+        <h1>From 1,000 programs to two trusted attempts</h1>
+        <p class="lead">The compatibility matrix learns which verified induction programs transfer between tasks. A small deterministic ML ranker turns those results into retrieval order for direct solving and Luna/Sol resynthesis.</p>
+      </div>
+      <aside class="hero-metric" aria-label="Matrix scale">
+        <div class="eyebrow">Local compatibility workload</div>
+        <strong>1,000,000</strong>
+        <span>program–task executions · no OpenAI quota</span>
+      </aside>
+    </header>
+
+    <nav class="stage-nav" role="tablist" aria-label="Architecture stages">
+      <button class="stage-button" type="button" role="tab" aria-selected="true" aria-controls="matrix-stage" id="matrix-tab" data-stage="matrix">
+        <span class="stage-number">1</span><span><b>Compatibility matrix</b><small>Generate exact-transfer labels</small></span>
+      </button>
+      <button class="stage-button" type="button" role="tab" aria-selected="false" aria-controls="model-stage" id="model-tab" data-stage="model">
+        <span class="stage-number">2</span><span><b>Ranker ML model</b><small>Learn transfer probability</small></span>
+      </button>
+      <button class="stage-button" type="button" role="tab" aria-selected="false" aria-controls="eval-stage" id="eval-tab" data-stage="eval">
+        <span class="stage-number">3</span><span><b>Evaluation adaptation</b><small>Retrieve, verify, resynthesize</small></span>
+      </button>
+    </nav>
+
+    <section class="stage-panel active" id="matrix-stage" role="tabpanel" aria-labelledby="matrix-tab">
+      <div class="diagram-shell">
+        <header class="diagram-header">
+          <div><div class="eyebrow">Stage 1</div><h2>Build empirical transfer evidence</h2><p>Every deduplicated program is executed against every training task. Click a grid cell or pipeline node to inspect what one compatibility record means.</p></div>
+          <span class="status-chip">100% LOCAL</span>
+        </header>
+        <div class="diagram-body two-col">
+          <div>
+            <div class="matrix-visual" aria-label="Schematic compatibility matrix with sparse exact transfers">
+              <span class="axis-label top">1,000 program hashes →</span>
+              <span class="axis-label left">1,000 training tasks →</span>
+              <div class="matrix-grid" id="matrix-grid"></div>
+            </div>
+            <div class="matrix-key" aria-label="Matrix legend">
+              <span class="key-item"><span class="key-dot exact"></span>Exact transfer</span>
+              <span class="key-item"><span class="key-dot partial"></span>Partial / near match</span>
+              <span class="key-item"><span class="key-dot"></span>Incompatible</span>
+              <span class="key-item">Schematic density</span>
+            </div>
+          </div>
+          <div class="flow-stack">
+            <button class="node purple detail-trigger" type="button" data-detail="pair"><span class="node-title">Select one program × task pair <code>1 / 1,000,000</code></span><p>The program keeps its source and receives the target task's demonstrations through <code>solve(train, grid)</code>.</p></button>
+            <div class="arrow-down">↓</div>
+            <button class="node detail-trigger" type="button" data-detail="safety"><span class="node-title">Static sandbox gate <code>safe?</code></span><p>Reject embedded grids, task IDs, oversized literals, unsafe AST constructs, and invalid output behavior.</p></button>
+            <div class="arrow-down">↓</div>
+            <button class="node orange detail-trigger" type="button" data-detail="verify"><span class="node-title">Cross-task verifier <code>exact?</code></span><p>Full demonstrations + leave-one-out demonstrations + labelled training tests. D4 and colour transforms are skipped here for speed.</p></button>
+            <div class="arrow-down">↓</div>
+            <button class="node green detail-trigger" type="button" data-detail="record"><span class="node-title">Durable compatibility row <code>34 features + label</code></span><p>Stores binary exactness, partial score, compact verifier counts, and ranker features in SQLite.</p></button>
+          </div>
+        </div>
+      </div>
+      <div class="inspector" aria-live="polite">
+        <div><div class="inspector-label">Selected concept</div><h3 id="detail-title">Program–task pair</h3></div>
+        <p id="detail-text">One bank program is tested as a candidate solver for one different training task. The matrix measures transfer by execution, not by trusting the program's written hypothesis.</p>
+        <div class="impact"><b>Accuracy effect</b><span id="detail-impact">Finds rare reusable rules and supplies honest positive and negative examples to the ranker.</span></div>
+      </div>
+    </section>
+
+    <section class="stage-panel" id="model-stage" role="tabpanel" aria-labelledby="model-tab">
+      <div class="diagram-shell">
+        <header class="diagram-header">
+          <div><div class="eyebrow">Stage 2</div><h2>Deterministic compatibility classifier</h2><p>The model predicts <code>P(program fully transfers to target task)</code>. It is a small standardized linear classifier—not an LLM and not a fine-tune of Luna or Sol.</p></div>
+          <span class="status-chip">SCIKIT-LEARN</span>
+        </header>
+        <div class="diagram-body">
+          <div class="model-flow" aria-label="Ranker machine learning model architecture">
+            <div class="feature-stack">
+              <button class="feature-card blue detail-trigger" type="button" data-detail="target-features"><strong>Target task features</strong><span>15 values · demonstrations only</span></button>
+              <button class="feature-card purple detail-trigger" type="button" data-detail="delta-features"><strong>Target ↔ source deltas</strong><span>15 absolute differences</span></button>
+              <button class="feature-card orange detail-trigger" type="button" data-detail="program-features"><strong>Program metadata</strong><span>4 values · complexity + sizes</span></button>
+            </div>
+            <div class="model-arrow">→</div>
+            <button class="model-block clickable detail-trigger" type="button" data-detail="vector"><span>Dense vector</span><span class="big">34</span><p>numeric features per program–task pair</p></button>
+            <div class="model-arrow">→</div>
+            <button class="model-block clickable detail-trigger" type="button" data-detail="classifier"><span>Pipeline</span><span class="big">StandardScaler</span><p>then <strong>SGDClassifier</strong></p><ul><li>loss = log_loss</li><li>penalty = L2 · α = 1e−4</li><li>class_weight = balanced</li><li>seed = 42 · 10 passes</li></ul></button>
+            <div class="model-arrow">→</div>
+            <button class="model-block clickable detail-trigger" type="button" data-detail="probability"><span>Output</span><span class="big">P(exact)</span><p>Sort 1,000 programs from strongest to weakest transfer candidate</p></button>
+          </div>
+
+          <div class="training-strip" aria-label="Ranker training and validation sequence">
+            <div class="mini-step"><b>1. Load matrix</b><span>Up to 1,000,000 labelled rows</span></div>
+            <div class="mini-step"><b>2. Split by task</b><span>Five deterministic held-out folds</span></div>
+            <div class="mini-step"><b>3. Fit folds</b><span>No target task appears in its training fold</span></div>
+            <div class="mini-step"><b>4. Report recall</b><span>Top-1 · Top-8 · Top-32</span></div>
+            <div class="mini-step"><b>5. Refit all rows</b><span>Freeze <code>ranker.pkl</code></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="inspector" aria-live="polite">
+        <div><div class="inspector-label">Selected concept</div><h3 id="model-detail-title">34-feature transfer vector</h3></div>
+        <p id="model-detail-text">The vector combines target structure, distance from the program's source task, and simple program complexity metadata.</p>
+        <div class="impact"><b>Accuracy effect</b><span id="model-detail-impact">Moves likely reusable programs to the front of direct verification and the LLM retrieval context.</span></div>
+      </div>
+    </section>
+
+    <section class="stage-panel" id="eval-stage" role="tabpanel" aria-labelledby="eval-tab">
+      <div class="diagram-shell">
+        <header class="diagram-header">
+          <div><div class="eyebrow">Stage 3</div><h2>Adapt the frozen bank to public or private evaluation</h2><p>The evaluation task is sanitized first. Only demonstrations and test inputs are visible to retrieval, verification, and synthesis.</p></div>
+          <span class="status-chip">LABEL ISOLATED</span>
+        </header>
+        <div class="diagram-body">
+          <div class="eval-flow" aria-label="Evaluation retrieval and synthesis flow">
+            <button class="node purple detail-trigger" type="button" data-detail="eval-input"><span class="node-title">Sanitized evaluation task</span><p>Labelled demonstrations + unlabelled test inputs.</p></button>
+            <div class="model-arrow">→</div>
+            <div class="branch-box">
+              <div class="branch-label">Two complementary paths <span>same frozen ranker</span></div>
+              <button class="node green detail-trigger" type="button" data-detail="direct"><span class="node-title">A · Direct ensemble <code>rank → verify</code></span><p>Try programs in rank order until 8 pass demonstration, LOO, D4, colour, safety, and runtime guards—or exhaust the bank.</p></button>
+              <button class="node orange detail-trigger" type="button" data-detail="resynthesis"><span class="node-title">B · Luna/Sol resynthesis <code>top 8 → prompt</code></span><p>Provide retrieved hypotheses, invariants, tags, and complete source as transferable ideas; refine using demonstration feedback only.</p></button>
+            </div>
+            <div class="model-arrow">→</div>
+            <div class="merge-stack">
+              <button class="node purple detail-trigger" type="button" data-detail="consensus"><span class="node-title">Behavioral consensus</span><p>Group candidates that predict identical test outputs.</p></button>
+              <button class="node green detail-trigger" type="button" data-detail="attempts"><span class="node-title">Attempt 1 + Attempt 2</span><p>Strongest guarded consensus, then strongest distinct behavior.</p></button>
+              <button class="node detail-trigger" type="button" data-detail="freeze"><span class="node-title">Atomic submission freeze</span><p>Hash outputs before scoring.</p></button>
+            </div>
+          </div>
+          <div class="label-gate">Evaluation labels remain below this boundary<small>Public labels are scoring-only after freeze; private labels stay external.</small></div>
+        </div>
+      </div>
+      <div class="inspector" aria-live="polite">
+        <div><div class="inspector-label">Selected concept</div><h3 id="eval-detail-title">Sanitized evaluation task</h3></div>
+        <p id="eval-detail-text">The solver receives demonstration outputs but never the expected outputs for evaluation test inputs.</p>
+        <div class="impact"><b>Accuracy effect</b><span id="eval-detail-impact">Preserves a valid generalization measurement while still allowing task-local induction.</span></div>
+      </div>
+    </section>
+
+    <section class="score-grid" aria-label="How the ranker affects evaluation accuracy">
+      <div class="score-card"><b class="accent">Direct reuse</b><p>A generalized training program may solve an evaluation task without another model-derived algorithm.</p></div>
+      <div class="score-card"><b class="accent">Better synthesis priors</b><p>Top-ranked programs give Luna/Sol relevant mechanisms instead of unrelated examples.</p></div>
+      <div class="score-card"><b class="accent">Pass@2 diversity</b><p>Consensus supplies attempt 1 while a behaviorally distinct candidate protects attempt 2.</p></div>
+      <div class="score-card"><b class="caveat">Known limitation</b><p>The current linear ranker uses coarse numeric features and binary exact labels; novel relational tasks may still require fresh synthesis.</p></div>
+    </section>
+
+    <p class="footer-note">Frozen training artefacts: <code>program_bank.jsonl</code> · <code>ranker.pkl</code> · <code>manifest.json</code> · no evaluation-driven refit</p>
+  </main>
+
+  <script>
+    (() => {
+      const details = {
+        pair: ["Program–task pair", "One bank program is tested as a candidate solver for one different training task. The matrix measures transfer by execution, not by trusting the program's written hypothesis.", "Finds rare reusable rules and supplies honest positive and negative examples to the ranker."],
+        safety: ["Static sandbox gate", "The source is parsed before execution. Embedded task grids, task identifiers, oversized literal collections, unsafe syntax, and invalid solve contracts are rejected.", "Prevents apparent transfer caused by memorization or unsafe program behavior."],
+        verify: ["Cross-task exact verifier", "The target task's full demonstrations, leave-one-demonstration-out episodes, and labelled training tests must all be exact. Transformations are omitted only during this million-pair stage to keep runtime practical.", "Creates a strict target: a positive label means the program really transfers across all source cases."],
+        record: ["Durable compatibility record", "SQLite stores exactness, partial verifier score, compact guard counts, and the 34-feature vector after every pair, so interruption resumes without repeating completed checks.", "Produces deterministic, crash-safe supervised data for retrieval training."],
+        "target-features": ["15 target-task features", "Counts, dimensions, colours, connected components, symmetry ratios, separator lines, output area ratio, new-colour behavior, and episode counts are derived from demonstrations.", "Lets the ranker identify broad structural task families without evaluation test labels."],
+        "delta-features": ["15 source-to-target deltas", "For every episodic feature, the ranker sees the absolute difference between the target task and the source task that produced the program.", "Encodes whether a program is being transferred within or across structural task families."],
+        "program-features": ["4 program metadata features", "Normalized AST complexity, strategy-tag count, source-task count, and source-code length summarize program capacity and reuse history.", "Helps distinguish compact reusable procedures from highly specialized source programs."],
+        vector: ["34-feature transfer vector", "The feature order is fixed and deterministic: 15 target values, 15 absolute source deltas, then 4 program values.", "Provides a compact representation that can score all 1,000 programs quickly for every evaluation task."],
+        classifier: ["Standardized logistic SGD", "StandardScaler normalizes feature magnitudes. SGDClassifier then learns a linear log-odds boundary with L2 regularization, balanced classes, seed 42, and ten passes.", "Balanced classes stop the rare exact transfers from being overwhelmed by the much larger negative class."],
+        probability: ["Probability of exact transfer", "The fitted classifier emits one probability per bank program. Stable hash ordering breaks equal scores, producing a deterministic ranked list.", "Concentrates direct verification and prompt context on the most plausible reusable programs."],
+        "eval-input": ["Sanitized evaluation task", "The solver receives labelled demonstrations and unlabelled test inputs. Expected evaluation test outputs are removed before any candidate sees the task.", "Preserves a valid public/private generalization measurement."],
+        direct: ["Direct guarded ensemble", "Ranked programs are executed locally. A candidate must be safe and exact on demonstrations, leave-one-out episodes, all eight D4 transforms, and four deterministic foreground-colour permutations.", "Can solve recurring task families directly and supplies independent predictions for consensus."],
+        resynthesis: ["Ranker-guided resynthesis", "The top eight programs contribute hypotheses, invariants, tags, and source to Luna/Sol. The model adapts these ideas to the new demonstrations; repeated plateaus force an independent restart without retrieved source.", "Improves the starting abstraction while retaining an escape route when retrieval anchors the model incorrectly."],
+        consensus: ["Behavioral consensus", "Candidates are grouped by the complete set of predicted test grids. Guarded groups rank before unguarded groups, followed by agreement count and verifier score.", "Reduces variance: independent programs agreeing on the same behavior strengthen attempt 1."],
+        attempts: ["Two behaviorally distinct attempts", "Attempt 1 uses the strongest consensus group. Attempt 2 uses the strongest group with different predicted outputs whenever available.", "Targets both strict task accuracy and ARC Pass@2 coverage."],
+        freeze: ["Atomic submission freeze", "All task outputs are written and hashed before any scoring labels are loaded. The same frozen bank and ranker serve public and private evaluation.", "Prevents evaluation-driven refinement and keeps the reported score comparable."],
+      };
+
+      const stageButtons = [...document.querySelectorAll(".stage-button")];
+      const panels = [...document.querySelectorAll(".stage-panel")];
+      stageButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const target = button.dataset.stage + "-stage";
+          stageButtons.forEach((item) => item.setAttribute("aria-selected", String(item === button)));
+          panels.forEach((panel) => panel.classList.toggle("active", panel.id === target));
+        });
+      });
+
+      const matrix = document.getElementById("matrix-grid");
+      const exact = new Set([2, 17, 29, 44, 61, 76, 83, 101, 118, 132, 147, 159]);
+      const partial = new Set([8, 22, 35, 51, 67, 73, 91, 109, 126, 138, 151, 164]);
+      for (let index = 0; index < 168; index += 1) {
+        const cell = document.createElement("button");
+        const row = Math.floor(index / 14) + 1;
+        const column = index % 14 + 1;
+        const state = exact.has(index) ? "exact" : partial.has(index) ? "partial" : "incompatible";
+        cell.type = "button";
+        cell.className = "matrix-cell " + (state === "incompatible" ? "" : state);
+        cell.setAttribute("aria-label", `Schematic program ${column}, task ${row}: ${state}`);
+        cell.addEventListener("click", () => {
+          matrix.querySelectorAll(".selected").forEach((item) => item.classList.remove("selected"));
+          cell.classList.add("selected");
+          setDetail("matrix", state === "exact" ? ["Exact transfer cell", "This schematic cell represents a program that passes every base, leave-one-out, and labelled training-test case on the target task.", "Positive cells teach the ranker which structural similarities predict genuine program reuse."] : state === "partial" ? ["Near-match cell", "This schematic cell represents a program that produces some correct structure but fails at least one required case. The partial score is stored, although the current ranker trains on binary exactness.", "Near matches are available for analysis but are not yet used as graded ranker targets."] : ["Incompatible cell", "This schematic cell represents a program that does not fully transfer to the target task.", "Negative examples teach the classifier which apparent similarities are misleading."]);
+        });
+        matrix.appendChild(cell);
+      }
+
+      function setDetail(stage, values) {
+        const prefix = stage === "matrix" ? "detail" : stage + "-detail";
+        document.getElementById(prefix + "-title").textContent = values[0];
+        document.getElementById(prefix + "-text").textContent = values[1];
+        document.getElementById(prefix + "-impact").textContent = values[2];
+      }
+
+      document.querySelectorAll(".detail-trigger").forEach((trigger) => {
+        trigger.addEventListener("click", () => {
+          const panel = trigger.closest(".stage-panel");
+          const stage = panel.id.split("-")[0];
+          panel.querySelectorAll(".selected").forEach((item) => item.classList.remove("selected"));
+          trigger.classList.add("selected");
+          setDetail(stage, details[trigger.dataset.detail]);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

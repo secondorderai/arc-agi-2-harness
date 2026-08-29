@@ -45,7 +45,11 @@ class FakeRPC:
                     {
                         "id": "gpt-5.6-luna",
                         "supportedReasoningEfforts": [{"reasoningEffort": "xhigh"}],
-                    }
+                    },
+                    {
+                        "id": "gpt-5.6-terra",
+                        "supportedReasoningEfforts": [{"reasoningEffort": "xhigh"}],
+                    },
                 ]
             }
         if method == "account/rateLimits/read":
@@ -126,6 +130,41 @@ def test_subscription_completed_turn_maps_to_responses_shape(tmp_path: Path) -> 
     assert completed.usage.input_tokens == 7
     assert completed.usage.reasoning_tokens == 3
     assert completed.body["provider"] == "chatgpt_subscription"
+    assert json.loads(completed.body["output"][0]["content"][0]["text"]) == PROGRAM
+
+
+def test_subscription_turn_can_override_model_with_terra(tmp_path: Path) -> None:
+    rpc = FakeRPC()
+    client = CodexSubscriptionClient(settings=ResponsesConfig(), workspace=tmp_path, rpc=rpc)
+
+    client.create(
+        prompt="prompt",
+        task_id="task",
+        phase="training",
+        round_index=20,
+        max_output_tokens=32_768,
+        previous_response_id=None,
+        request_key="terra-key",
+        model="gpt-5.6-terra",
+    )
+
+    assert rpc.turn_start_params is not None
+    assert rpc.turn_start_params["model"] == "gpt-5.6-terra"
+    assert rpc.turn_start_params["effort"] == "xhigh"
+
+
+def test_subscription_ignores_context_compaction_item(tmp_path: Path) -> None:
+    rpc = FakeRPC()
+    turn = _completed_turn()
+    items = turn["items"]
+    assert isinstance(items, list)
+    items.insert(1, {"type": "contextCompaction", "id": "compact-1"})
+    rpc.turns = [turn]
+    client = CodexSubscriptionClient(settings=ResponsesConfig(), workspace=tmp_path, rpc=rpc)
+
+    completed = client.retrieve(_response_id("thread-1", "turn-1", "stable-key"))
+
+    assert completed.status == "completed"
     assert json.loads(completed.body["output"][0]["content"][0]["text"]) == PROGRAM
 
 

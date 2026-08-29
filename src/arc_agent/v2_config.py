@@ -14,7 +14,7 @@ class ResponsesConfig(BaseModel):
 
     auth_mode: Literal["chatgpt_subscription", "api_key"] = "chatgpt_subscription"
     base_url: str = "https://api.openai.com/v1"
-    model: Literal["gpt-5.6-luna"] = "gpt-5.6-luna"
+    model: Literal["gpt-5.6-luna", "gpt-5.6-terra"] = "gpt-5.6-luna"
     api_key_env: str = "OPENAI_API_KEY"
     codex_cli: str = "codex"
     subscription_daemon: bool = True
@@ -36,7 +36,7 @@ class ResponsesConfig(BaseModel):
         if self.max_output_tokens != sorted(set(self.max_output_tokens)):
             raise ValueError("max_output_tokens must be unique and increasing")
         if self.max_output_tokens[-1] > 128_000:
-            raise ValueError("gpt-5.6-luna supports at most 128,000 output tokens")
+            raise ValueError("V2 synthesis models support at most 128,000 output tokens")
         return self
 
 
@@ -71,6 +71,10 @@ class V2ExperimentConfig(BaseModel):
     ranker: RankerConfig = Field(default_factory=RankerConfig)
     no_progress_reset_rounds: int = Field(default=3, ge=1, le=100)
     retrieved_programs: int = Field(default=8, ge=0, le=100)
+    # Worker count is operational and intentionally excluded from the frozen
+    # experiment hash so an unfinished workspace can resume at a new concurrency.
+    training_concurrency: int = Field(default=2, ge=1, le=16, exclude=True)
+    max_refinement_rounds: int = Field(default=80, ge=1, le=10_000, exclude=True)
     seed: int = 42
 
     def sha256(self) -> str:

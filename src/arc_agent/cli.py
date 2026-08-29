@@ -293,10 +293,25 @@ def v2_build_bank(
     ] = False,
     restart_task: Annotated[
         bool,
-        typer.Option(help="Start a fresh Luna chain for the active task without skipping it"),
+        typer.Option(help="Start a fresh model chain for the active task without skipping it"),
     ] = False,
+    concurrency: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            max=16,
+            help="Concurrent training tasks; defaults to training_concurrency in config",
+        ),
+    ] = None,
+    max_refinement_rounds: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Maximum candidate attempts per task before freezing the best program",
+        ),
+    ] = None,
 ) -> None:
-    """Sequentially synthesize, verify, checkpoint, and freeze the V2 program bank."""
+    """Concurrently synthesize, verify, checkpoint, and freeze the V2 program bank."""
     from arc_agent.v2_config import load_v2_config
     from arc_agent.v2_experiment import V2Orchestrator
     from arc_agent.v2_state import StateMismatch, V2State, WorkspaceBusy
@@ -308,13 +323,16 @@ def v2_build_bank(
         with V2State(workspace) as state:
             state.set_meta("training_data_path", str(data.resolve()))
             state.set_meta("training_config_path", str(config.resolve()))
-            orchestrator = V2Orchestrator(load_v2_config(config), state)
+            loaded_config = load_v2_config(config)
+            orchestrator = V2Orchestrator(loaded_config, state)
             try:
                 result = orchestrator.build_bank(
                     tasks,
                     dataset_hash=sha256_path(data),
                     resume_only=resume,
                     restart_task=restart_task,
+                    concurrency=concurrency,
+                    max_refinement_rounds=max_refinement_rounds,
                 )
             finally:
                 orchestrator.close()
@@ -341,7 +359,7 @@ def v2_evaluate(
     resume: Annotated[bool, typer.Option(help="Require an existing evaluation run")] = False,
     restart_task: Annotated[
         bool,
-        typer.Option(help="Start a fresh Luna chain for the active task without skipping it"),
+        typer.Option(help="Start a fresh model chain for the active task without skipping it"),
     ] = False,
 ) -> None:
     """Run or resume the frozen, label-blind V2 public evaluation."""
@@ -389,12 +407,18 @@ def v2_status(
         summary = state.summary(phase)
         data_path = state.get_meta(f"{phase}_data_path")
         config_path = state.get_meta(f"{phase}_config_path")
+        concurrency = state.get_meta(f"{phase}_concurrency")
+        max_refinement_rounds = state.get_meta(f"{phase}_max_refinement_rounds")
     command = "v2-build-bank" if phase == "training" else "v2-evaluate"
     parts = ["uv run arc-agent", command]
     if data_path:
         parts.extend(["--data", shlex.quote(str(data_path))])
     if config_path:
         parts.extend(["--config", shlex.quote(str(config_path))])
+    if phase == "training" and concurrency:
+        parts.extend(["--concurrency", str(concurrency)])
+    if phase == "training" and max_refinement_rounds:
+        parts.extend(["--max-refinement-rounds", str(max_refinement_rounds)])
     parts.extend(["--workspace", shlex.quote(str(workspace)), "--resume"])
     summary["resume_command"] = " ".join(parts)
     typer.echo(json.dumps(summary, indent=2, sort_keys=True))
