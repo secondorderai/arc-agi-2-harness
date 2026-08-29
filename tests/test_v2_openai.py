@@ -58,6 +58,22 @@ def test_responses_payload_is_luna_xhigh_standard() -> None:
     assert payload["text"]["format"]["type"] == "json_schema"
 
 
+def test_responses_payload_can_override_luna_with_terra() -> None:
+    client = ResponsesClient(settings=ResponsesConfig(), api_key="test", client=httpx.Client())
+    payload = client.request_payload(
+        prompt="prompt",
+        task_id="task",
+        phase="training",
+        round_index=20,
+        max_output_tokens=32_768,
+        previous_response_id=None,
+        model="gpt-5.6-terra",
+    )
+
+    assert payload["model"] == "gpt-5.6-terra"
+    assert payload["reasoning"]["effort"] == "xhigh"
+
+
 def test_quota_and_rate_limit_are_classified_separately() -> None:
     request = httpx.Request("POST", "https://api.openai.com/v1/responses")
     rate = httpx.Response(

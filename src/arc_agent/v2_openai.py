@@ -64,6 +64,7 @@ class SynthesisClient(Protocol):
         max_output_tokens: int,
         previous_response_id: str | None,
         request_key: str,
+        model: str | None = None,
         checkpoint: Callable[[ResponseSnapshot], None] | None = None,
     ) -> ResponseSnapshot: ...
 
@@ -271,10 +272,12 @@ class ResponsesClient:
         round_index: int,
         max_output_tokens: int,
         previous_response_id: str | None,
+        model: str | None = None,
     ) -> dict[str, Any]:
+        selected_model = model or self.settings.model
         cache_key = hashlib.sha256(f"arc-v2:{phase}:{task_id}".encode()).hexdigest()[:64]
         payload: dict[str, Any] = {
-            "model": self.settings.model,
+            "model": selected_model,
             "instructions": INSTRUCTIONS,
             "input": prompt,
             "reasoning": {
@@ -328,6 +331,7 @@ class ResponsesClient:
         max_output_tokens: int,
         previous_response_id: str | None,
         request_key: str,
+        model: str | None = None,
         checkpoint: Callable[[ResponseSnapshot], None] | None = None,
     ) -> ResponseSnapshot:
         payload = self.request_payload(
@@ -337,6 +341,7 @@ class ResponsesClient:
             round_index=round_index,
             max_output_tokens=max_output_tokens,
             previous_response_id=previous_response_id,
+            model=model,
         )
         try:
             response = self.client.post(

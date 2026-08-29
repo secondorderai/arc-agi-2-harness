@@ -118,6 +118,7 @@ def build_synthesis_prompt(
     feedback: str | None,
     retrieved_programs: list[BankProgram],
     retrieved_limit: int,
+    independent_resynthesis: bool = False,
 ) -> str:
     if any(pair.output is not None for pair in task.test):
         task = sanitize_task(task)
@@ -131,6 +132,15 @@ def build_synthesis_prompt(
         )
     )
     feedback_text = feedback or "No prior candidate exists. Derive a fresh general rule."
+    independence_policy = (
+        """INDEPENDENT RESYNTHESIS
+Repeated verifier behaviour has persisted across separate response chains. Start over from the
+task evidence and construct a genuinely different causal rule. Do not reconstruct, imitate, or
+locally patch any previous program or hypothesis. Compare multiple competing abstractions before
+writing code; prefer a different representation, tie-breaking rule, and decomposition."""
+        if independent_resynthesis
+        else ""
+    )
     return f"""Synthesize an ARC-AGI-2 induction program.
 
 CONTRACT
@@ -146,6 +156,8 @@ POLICY
 
 SEARCH LENS
 {search_lens}
+
+{independence_policy}
 
 TASK
 {json.dumps(task_payload(task), separators=(",", ":"))}

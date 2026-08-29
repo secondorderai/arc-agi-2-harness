@@ -350,3 +350,113 @@ def verification_feedback(verification: InductionVerification) -> str:
         if failure.detail:
             lines.append(f"Diff: {failure.detail}")
     return "\n".join(lines)
+
+
+def failed_induction_guards(
+    verification: InductionVerification,
+    task: ArcTask,
+    *,
+    guards: GuardConfig,
+) -> list[dict[str, object]]:
+    """Return durable, human-readable guard failures for a best-effort program."""
+    failures = verification.failures
+    result: list[dict[str, object]] = []
+
+    def cases(prefix: str) -> list[str]:
+        return sorted(failure.case for failure in failures if failure.case.startswith(prefix))
+
+    static = cases("static")
+    if not verification.static_safe or static:
+        result.append({"guard": "static_safety", "failed_cases": static or ["static"]})
+
+    parse = cases("response_parse")
+    if parse:
+        result.append({"guard": "structured_response", "failed_cases": parse})
+
+    demo_full = cases("demo_full_")
+    if demo_full:
+        result.append(
+            {
+                "guard": "full_demonstrations_exact",
+                "passed": max(0, len(task.train) - len(demo_full)),
+                "required": len(task.train),
+                "failed_cases": demo_full,
+            }
+        )
+
+    source = sorted(
+        failure.case
+        for failure in failures
+        if failure.case.startswith(("source_test_", "test_execution_"))
+    )
+    required_tests = len(task.test)
+    if verification.source_tests_exact < required_tests or source:
+        result.append(
+            {
+                "guard": "labelled_source_tests_exact",
+                "passed": verification.source_tests_exact,
+                "required": required_tests,
+                "failed_cases": source,
+            }
+        )
+
+    loo = cases("demo_loo_")
+    required_loo = len(task.train) if guards.require_leave_one_out else 0
+    if guards.require_leave_one_out and (
+        verification.leave_one_out_exact < required_loo or loo
+    ):
+        result.append(
+            {
+                "guard": "leave_one_out_exact",
+                "passed": verification.leave_one_out_exact,
+                "required": required_loo,
+                "failed_cases": loo,
+            }
+        )
+
+    if guards.d4_transforms:
+        for transform, _ in d4_transforms():
+            transformed = cases(f"{transform}_")
+            if transformed:
+                result.append(
+                    {
+                        "guard": "d4_transform_exact",
+                        "transform": transform,
+                        "failed_cases": transformed,
+                    }
+                )
+
+    color_names = sorted(
+        {
+            failure.case.split("_loo_", 1)[0].split("_test_", 1)[0]
+            for failure in failures
+            if failure.case.startswith("color_permutation_")
+        }
+    )
+    for transform in color_names:
+        result.append(
+            {
+                "guard": "color_permutation_exact",
+                "transform": transform,
+                "failed_cases": cases(f"{transform}_"),
+            }
+        )
+
+    runtime = sorted(
+        failure.case
+        for failure in failures
+        if failure.error and failure.case not in {*static, *parse}
+    )
+    if runtime:
+        result.append({"guard": "runtime_and_grid_validation", "failed_cases": runtime})
+
+    if not verification.accepted and not result:
+        result.append(
+            {
+                "guard": "all_verifier_cases_exact",
+                "passed": verification.exact_cases,
+                "required": verification.total_cases,
+                "failed_cases": sorted(failure.case for failure in failures),
+            }
+        )
+    return result

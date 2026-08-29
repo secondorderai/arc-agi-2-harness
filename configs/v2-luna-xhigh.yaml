@@ -1,6 +1,7 @@
 name: v2-luna-xhigh
 openai:
   # Uses `arc-agent v2-auth-login`; set to api_key only for an explicit API-billed run.
+  # Harness policy escalates per-task refinement attempt 21+ to gpt-5.6-sol at xhigh.
   auth_mode: chatgpt_subscription
   model: gpt-5.6-luna
   codex_cli: codex
@@ -31,4 +32,6 @@ ranker:
   direct_verified_target: 8
 no_progress_reset_rounds: 3
 retrieved_programs: 8
+training_concurrency: 2
+max_refinement_rounds: 80
 seed: 42

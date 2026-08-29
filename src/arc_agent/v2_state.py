@@ -22,6 +22,34 @@ def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
+def _set_meta_value(connection: sqlite3.Connection, key: str, value: Any, now: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO meta(key, value_json, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value_json=excluded.value_json, updated_at=excluded.updated_at
+        """,
+        (key, _json(value), now),
+    )
+
+
+def verification_failure_signature(verification: InductionVerification) -> str:
+    """Hash observable verifier behaviour, independent of generated source text."""
+    material = {
+        "static_safe": verification.static_safe,
+        "exact_cases": verification.exact_cases,
+        "total_cases": verification.total_cases,
+        "source_tests_exact": verification.source_tests_exact,
+        "source_tests_total": verification.source_tests_total,
+        "leave_one_out_exact": verification.leave_one_out_exact,
+        "leave_one_out_total": verification.leave_one_out_total,
+        "transformed_exact": verification.transformed_exact,
+        "transformed_total": verification.transformed_total,
+        "failures": [failure.model_dump(mode="json") for failure in verification.failures],
+    }
+    return hashlib.sha256(_json(material).encode()).hexdigest()
+
+
 class WorkspaceBusy(RuntimeError):
     pass
 
@@ -31,7 +59,13 @@ class StateMismatch(RuntimeError):
 
 
 class V2State:
-    def __init__(self, workspace: str | Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        workspace: str | Path,
+        *,
+        read_only: bool = False,
+        acquire_workspace_lock: bool = True,
+    ) -> None:
         self.workspace = Path(workspace)
         if read_only and not self.workspace.exists():
             raise FileNotFoundError(self.workspace)
@@ -39,7 +73,7 @@ class V2State:
             self.workspace.mkdir(parents=True, exist_ok=True)
         self.read_only = read_only
         self._lock_stream: Any | None = None
-        if not read_only:
+        if not read_only and acquire_workspace_lock:
             lock_path = self.workspace / ".lock"
             self._lock_stream = lock_path.open("a+")
             try:
@@ -54,10 +88,12 @@ class V2State:
             self.connection = sqlite3.connect(database)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys=ON")
+        self.connection.execute("PRAGMA busy_timeout=30000")
         if not read_only:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.execute("PRAGMA synchronous=FULL")
-            self._create_schema()
+            if acquire_workspace_lock:
+                self._create_schema()
 
     def close(self) -> None:
         self.connection.close()
@@ -93,6 +129,8 @@ class V2State:
                 best_candidate_id TEXT,
                 previous_response_id TEXT,
                 direct_cursor INTEGER NOT NULL DEFAULT 0,
+                acceptance_kind TEXT,
+                failed_guards_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (phase, task_id),
@@ -107,6 +145,9 @@ class V2State:
                 prompt TEXT NOT NULL,
                 previous_response_id TEXT,
                 token_limit INTEGER NOT NULL,
+                model TEXT,
+                strategy_mode TEXT NOT NULL DEFAULT 'refinement',
+                plateau_signature TEXT,
                 response_id TEXT UNIQUE,
                 status TEXT NOT NULL,
                 body_json TEXT,
@@ -131,6 +172,18 @@ class V2State:
                 python_source TEXT NOT NULL,
                 verification_json TEXT NOT NULL,
                 predictions_hash TEXT NOT NULL,
+                score REAL NOT NULL,
+                accepted INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS candidate_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                phase TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                round_index INTEGER NOT NULL,
+                candidate_id TEXT NOT NULL,
+                response_id TEXT,
+                failure_signature TEXT NOT NULL,
                 score REAL NOT NULL,
                 accepted INTEGER NOT NULL,
                 created_at TEXT NOT NULL
@@ -170,6 +223,8 @@ class V2State:
                 ON requests(phase, task_id, round_index);
             CREATE INDEX IF NOT EXISTS candidates_task_index
                 ON candidates(phase, task_id, score DESC);
+            CREATE INDEX IF NOT EXISTS candidate_attempts_task_index
+                ON candidate_attempts(phase, task_id, round_index DESC);
             """
         )
         columns = {
@@ -181,25 +236,83 @@ class V2State:
             )
         if "last_retry_after" not in columns:
             self.connection.execute("ALTER TABLE requests ADD COLUMN last_retry_after REAL")
+        if "model" not in columns:
+            self.connection.execute("ALTER TABLE requests ADD COLUMN model TEXT")
+        if "strategy_mode" not in columns:
+            self.connection.execute(
+                "ALTER TABLE requests ADD COLUMN strategy_mode TEXT NOT NULL DEFAULT 'refinement'"
+            )
+        if "plateau_signature" not in columns:
+            self.connection.execute("ALTER TABLE requests ADD COLUMN plateau_signature TEXT")
+        task_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(phase_tasks)").fetchall()
+        }
+        if "acceptance_kind" not in task_columns:
+            self.connection.execute("ALTER TABLE phase_tasks ADD COLUMN acceptance_kind TEXT")
+        if "failed_guards_json" not in task_columns:
+            self.connection.execute(
+                "ALTER TABLE phase_tasks ADD COLUMN failed_guards_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        self.connection.execute(
+            """
+            UPDATE phase_tasks SET acceptance_kind='full'
+            WHERE status='accepted' AND acceptance_kind IS NULL
+            """
+        )
+        candidate_rows = self.connection.execute(
+            """
+            SELECT candidate_id, phase, task_id, round_index, response_id,
+                verification_json, score, accepted, created_at
+            FROM candidates
+            """
+        ).fetchall()
+        for row in candidate_rows:
+            verification = InductionVerification.model_validate_json(row["verification_json"])
+            attempt_id = hashlib.sha256(
+                (
+                    f"{row['phase']}\0{row['task_id']}\0{row['round_index']}\0"
+                    f"{row['response_id'] or row['candidate_id']}"
+                ).encode()
+            ).hexdigest()
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO candidate_attempts(
+                    attempt_id, phase, task_id, round_index, candidate_id, response_id,
+                    failure_signature, score, accepted, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    row["phase"],
+                    row["task_id"],
+                    row["round_index"],
+                    row["candidate_id"],
+                    row["response_id"],
+                    verification_failure_signature(verification),
+                    row["score"],
+                    row["accepted"],
+                    row["created_at"],
+                ),
+            )
         self.connection.commit()
 
     @contextmanager
-    def transaction(self) -> Iterable[sqlite3.Connection]:
+    def transaction(self, *, immediate: bool = False) -> Iterable[sqlite3.Connection]:
         if self.read_only:
             raise RuntimeError("read-only state cannot be mutated")
-        with self.connection:
+        self.connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        try:
             yield self.connection
+        except BaseException:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
 
     def set_meta(self, key: str, value: Any) -> None:
         with self.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO meta(key, value_json, updated_at) VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    value_json=excluded.value_json, updated_at=excluded.updated_at
-                """,
-                (key, _json(value), _now()),
-            )
+            _set_meta_value(connection, key, value, _now())
 
     def get_meta(self, key: str, default: Any = None) -> Any:
         row = self.connection.execute("SELECT value_json FROM meta WHERE key=?", (key,)).fetchone()
@@ -260,6 +373,52 @@ class V2State:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def active_tasks(self, phase: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM phase_tasks
+            WHERE phase=? AND status='running'
+            ORDER BY position
+            """,
+            (phase,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def requeue_running_tasks(self, phase: str) -> int:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE phase_tasks SET status='pending', updated_at=?
+                WHERE phase=? AND status='running'
+                """,
+                (_now(), phase),
+            )
+        return int(cursor.rowcount)
+
+    def claim_pending_tasks(self, phase: str, *, limit: int) -> list[dict[str, Any]]:
+        if limit < 1:
+            return []
+        with self.transaction(immediate=True) as connection:
+            rows = connection.execute(
+                """
+                SELECT task_id FROM phase_tasks
+                WHERE phase=? AND status='pending'
+                ORDER BY position LIMIT ?
+                """,
+                (phase, limit),
+            ).fetchall()
+            task_ids = [str(row["task_id"]) for row in rows]
+            if task_ids:
+                placeholders = ",".join("?" for _ in task_ids)
+                connection.execute(
+                    f"""
+                    UPDATE phase_tasks SET status='running', updated_at=?
+                    WHERE phase=? AND task_id IN ({placeholders}) AND status='pending'
+                    """,
+                    (_now(), phase, *task_ids),
+                )
+        return [self.task_row(phase, task_id) for task_id in task_ids]
+
     def task_row(self, phase: str, task_id: str) -> dict[str, Any]:
         row = self.connection.execute(
             "SELECT * FROM phase_tasks WHERE phase=? AND task_id=?", (phase, task_id)
@@ -282,6 +441,8 @@ class V2State:
             "best_candidate_id",
             "previous_response_id",
             "direct_cursor",
+            "acceptance_kind",
+            "failed_guards_json",
             "updated_at",
         }
         if set(updates) - allowed:
@@ -328,15 +489,31 @@ class V2State:
     def pause(self, phase: str, status: str, message: str) -> None:
         if status not in {"paused_quota", "paused_configuration", "paused_user"}:
             raise ValueError(status)
-        self.set_meta(f"{phase}_status", status)
-        self.set_meta(f"{phase}_last_error", message)
-        if not self.get_meta(f"{phase}_paused_at"):
-            self.set_meta(f"{phase}_paused_at", _now())
-        if status == "paused_quota":
-            self.set_meta(
-                f"{phase}_quota_pause_count",
-                int(self.get_meta(f"{phase}_quota_pause_count", 0)) + 1,
-            )
+        now = _now()
+        with self.transaction(immediate=True) as connection:
+            values = {
+                row["key"]: json.loads(row["value_json"])
+                for row in connection.execute(
+                    "SELECT key, value_json FROM meta WHERE key IN (?, ?, ?)",
+                    (
+                        f"{phase}_status",
+                        f"{phase}_paused_at",
+                        f"{phase}_quota_pause_count",
+                    ),
+                ).fetchall()
+            }
+            previous_status = values.get(f"{phase}_status")
+            _set_meta_value(connection, f"{phase}_status", status, now)
+            _set_meta_value(connection, f"{phase}_last_error", message, now)
+            if not values.get(f"{phase}_paused_at"):
+                _set_meta_value(connection, f"{phase}_paused_at", now, now)
+            if status == "paused_quota" and previous_status != "paused_quota":
+                _set_meta_value(
+                    connection,
+                    f"{phase}_quota_pause_count",
+                    int(values.get(f"{phase}_quota_pause_count", 0)) + 1,
+                    now,
+                )
 
     def complete_phase(self, phase: str) -> None:
         self.set_meta(f"{phase}_status", "complete")
@@ -352,6 +529,9 @@ class V2State:
         prompt: str,
         previous_response_id: str | None,
         token_limit: int,
+        model: str | None = None,
+        strategy_mode: str = "refinement",
+        plateau_signature: str | None = None,
     ) -> dict[str, Any]:
         prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
         created_at = _now()
@@ -360,8 +540,9 @@ class V2State:
                 """
                 INSERT INTO requests(
                     request_key, phase, task_id, round_index, prompt_hash, prompt,
-                    previous_response_id, token_limit, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
+                    previous_response_id, token_limit, model, strategy_mode,
+                    plateau_signature, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
                 ON CONFLICT(request_key) DO NOTHING
                 """,
                 (
@@ -373,6 +554,9 @@ class V2State:
                     prompt,
                     previous_response_id,
                     token_limit,
+                    model,
+                    strategy_mode,
+                    plateau_signature,
                     created_at,
                     created_at,
                 ),
@@ -397,6 +581,64 @@ class V2State:
             (phase, task_id),
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def request_model_for_response(self, response_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT model FROM requests WHERE response_id=?", (response_id,)
+        ).fetchone()
+        if row is None or not row["model"]:
+            return None
+        return str(row["model"])
+
+    def repeated_failure_plateau(
+        self,
+        phase: str,
+        task_id: str,
+        *,
+        threshold: int,
+        window: int,
+    ) -> dict[str, Any] | None:
+        rows = self.connection.execute(
+            """
+            SELECT failure_signature, round_index, candidate_id FROM candidate_attempts
+            WHERE phase=? AND task_id=? AND accepted=0 AND round_index >= 0
+            ORDER BY round_index DESC, created_at DESC LIMIT ?
+            """,
+            (phase, task_id, window),
+        ).fetchall()
+        if not rows:
+            return None
+        signatures = list(dict.fromkeys(str(row["failure_signature"]) for row in rows))
+        plateaus: list[dict[str, Any]] = []
+        for signature in signatures:
+            last_independent = self.connection.execute(
+                """
+                SELECT MAX(round_index) AS round_index FROM requests
+                WHERE phase=? AND task_id=? AND strategy_mode='independent_plateau'
+                    AND plateau_signature=?
+                """,
+                (phase, task_id, signature),
+            ).fetchone()["round_index"]
+            matching = [
+                row
+                for row in rows
+                if row["failure_signature"] == signature
+                and (last_independent is None or int(row["round_index"]) > int(last_independent))
+            ]
+            if len(matching) >= threshold:
+                plateaus.append(
+                    {
+                        "signature": signature,
+                        "count": len(matching),
+                        "rounds": sorted(int(row["round_index"]) for row in matching),
+                        "latest_round": max(int(row["round_index"]) for row in matching),
+                        "candidate_id": str(matching[0]["candidate_id"]),
+                        "last_independent_round": last_independent,
+                    }
+                )
+        if not plateaus:
+            return None
+        return max(plateaus, key=lambda item: (item["latest_round"], item["count"]))
 
     def record_response(self, request_key: str, snapshot: ResponseSnapshot) -> None:
         with self.transaction() as connection:
@@ -456,6 +698,13 @@ class V2State:
         payload = f"{phase}\0{task_id}\0{source_kind}\0{python_source}"
         candidate_id = hashlib.sha256(payload.encode()).hexdigest()
         predictions_hash = hashlib.sha256(_json(verification.predictions).encode()).hexdigest()
+        failure_signature = verification_failure_signature(verification)
+        attempt_id = hashlib.sha256(
+            (
+                f"{phase}\0{task_id}\0{round_index}\0"
+                f"{response_id or source_kind + ':' + candidate_id}"
+            ).encode()
+        ).hexdigest()
         with self.transaction() as connection:
             connection.execute(
                 """
@@ -486,6 +735,29 @@ class V2State:
                     _now(),
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO candidate_attempts(
+                    attempt_id, phase, task_id, round_index, candidate_id, response_id,
+                    failure_signature, score, accepted, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(attempt_id) DO UPDATE SET
+                    failure_signature=excluded.failure_signature,
+                    score=excluded.score, accepted=excluded.accepted
+                """,
+                (
+                    attempt_id,
+                    phase,
+                    task_id,
+                    round_index,
+                    candidate_id,
+                    response_id,
+                    failure_signature,
+                    verification.score,
+                    int(verification.accepted),
+                    _now(),
+                ),
+            )
         task = self.task_row(phase, task_id)
         if verification.score > float(task["best_score"]):
             self.update_task(
@@ -503,6 +775,12 @@ class V2State:
             ORDER BY score DESC, created_at ASC LIMIT 1
             """,
             (phase, task_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def candidate(self, candidate_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM candidates WHERE candidate_id=?", (candidate_id,)
         ).fetchone()
         return dict(row) if row is not None else None
 
@@ -526,7 +804,20 @@ class V2State:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def accept_training_task(self, task_id: str, program: BankProgram, candidate_id: str) -> None:
+    def accept_training_task(
+        self,
+        task_id: str,
+        program: BankProgram,
+        candidate_id: str,
+        *,
+        acceptance_kind: str = "full",
+        failed_guards: list[dict[str, object]] | None = None,
+    ) -> None:
+        if acceptance_kind not in {"full", "best_effort"}:
+            raise ValueError(acceptance_kind)
+        recorded_failures = failed_guards or []
+        if acceptance_kind == "full" and recorded_failures:
+            raise ValueError("fully accepted tasks cannot have failed guards")
         existing = self.connection.execute(
             "SELECT source_task_ids_json FROM programs WHERE program_hash=?",
             (program.program_hash,),
@@ -564,11 +855,58 @@ class V2State:
             )
             connection.execute(
                 """
-                UPDATE phase_tasks SET status='accepted', best_candidate_id=?, updated_at=?
+                UPDATE phase_tasks SET status='accepted', best_candidate_id=?, best_score=?,
+                    acceptance_kind=?, failed_guards_json=?, updated_at=?
                 WHERE phase='training' AND task_id=?
                 """,
-                (candidate_id, now, task_id),
+                (
+                    candidate_id,
+                    program.verification.score,
+                    acceptance_kind,
+                    _json(recorded_failures),
+                    now,
+                    task_id,
+                ),
             )
+            if acceptance_kind == "best_effort":
+                connection.execute(
+                    """
+                    UPDATE requests SET ingested=1, status='abandoned_round_limit',
+                        error='best candidate frozen at refinement-round limit', updated_at=?
+                    WHERE phase='training' AND task_id=? AND ingested=0
+                    """,
+                    (now, task_id),
+                )
+
+    def acceptance_counts(self, phase: str) -> dict[str, int]:
+        return {
+            str(row["acceptance_kind"]): int(row["count"])
+            for row in self.connection.execute(
+                """
+                SELECT acceptance_kind, COUNT(*) AS count FROM phase_tasks
+                WHERE phase=? AND status='accepted' GROUP BY acceptance_kind
+                """,
+                (phase,),
+            ).fetchall()
+        }
+
+    def best_effort_tasks(self, phase: str = "training") -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT task_id, position, round_index, best_score, best_candidate_id,
+                failed_guards_json, updated_at
+            FROM phase_tasks
+            WHERE phase=? AND status='accepted' AND acceptance_kind='best_effort'
+            ORDER BY position
+            """,
+            (phase,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["failed_guards"] = json.loads(item.pop("failed_guards_json"))
+            result.append(item)
+        return result
 
     def list_programs(self) -> list[BankProgram]:
         rows = self.connection.execute("SELECT * FROM programs ORDER BY program_hash").fetchall()
@@ -690,6 +1028,18 @@ class V2State:
             totals["estimated_cost_usd"] += usage.estimated_cost_usd
         return totals
 
+    def request_counts_by_model(self, default_model: str) -> dict[str, int]:
+        return {
+            str(row["model"]): int(row["count"])
+            for row in self.connection.execute(
+                """
+                SELECT COALESCE(model, ?) AS model, COUNT(*) AS count
+                FROM requests GROUP BY COALESCE(model, ?) ORDER BY model
+                """,
+                (default_model, default_model),
+            ).fetchall()
+        }
+
     def summary(self, phase: str) -> dict[str, Any]:
         counts = {
             row["status"]: int(row["count"])
@@ -704,7 +1054,8 @@ class V2State:
         active = self.active_task(phase)
         last = self.connection.execute(
             """
-            SELECT response_id, status, error, updated_at FROM requests
+            SELECT response_id, status, model, strategy_mode, plateau_signature,
+                error, updated_at FROM requests
             WHERE phase=? ORDER BY updated_at DESC LIMIT 1
             """,
             (phase,),
@@ -729,7 +1080,10 @@ class V2State:
             "status": self.get_meta(f"{phase}_status", "not_started"),
             "authentication": self.get_meta("openai_auth_mode"),
             "active_task": active,
+            "active_tasks": self.active_tasks(phase),
             "counts": counts,
+            "acceptance_counts": self.acceptance_counts(phase),
+            "best_effort_count": len(self.best_effort_tasks(phase)),
             "last_response": dict(last) if last is not None else None,
             "usage": self.usage_totals(),
             "quota_pause_count": self.get_meta(f"{phase}_quota_pause_count", 0),
@@ -737,6 +1091,9 @@ class V2State:
             "active_seconds": active_seconds,
             "stage": self.get_meta(f"{phase}_stage"),
             "ranker_state": self.get_meta("ranker_state") if phase == "training" else None,
+            "adaptive_synthesis_policy": self.get_meta(
+                f"{phase}_adaptive_synthesis_policy"
+            ),
         }
 
 
