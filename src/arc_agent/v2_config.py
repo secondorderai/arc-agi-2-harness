@@ -62,6 +62,69 @@ class RankerConfig(BaseModel):
     direct_verified_target: int = Field(default=8, ge=1, le=100)
 
 
+class EvaluationConfig(BaseModel):
+    """Operational policy for adapting the frozen bank during evaluation.
+
+    The legacy defaults preserve the original exhaustive direct scan. These
+    settings are excluded from the training hash because they do not alter the
+    frozen program bank or ranker.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    direct_scan_limit: int | None = Field(default=None, ge=1)
+    direct_expand_limit: int | None = Field(default=None, ge=1)
+    direct_verified_target: int | None = Field(default=None, ge=1, le=100)
+    direct_concurrency: int = Field(default=1, ge=1, le=16)
+    staged_verification: bool = False
+    active_time_limit_seconds: float | None = Field(default=None, gt=0)
+    freeze_reserve_seconds: float = Field(default=0.0, ge=0)
+    direct_coverage_budget_seconds: float | None = Field(default=None, gt=0)
+    first_model_budget_seconds: float | None = Field(default=None, gt=0)
+    task_concurrency: int = Field(default=1, ge=1, le=16)
+    llm_concurrency: int = Field(default=1, ge=1, le=16)
+    model_turn_timeout_seconds: float | None = Field(default=None, gt=0)
+    max_model_attempts_per_task: int | None = Field(default=None, ge=1, le=100)
+    sol_after_model_attempts: int | None = Field(default=None, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def valid_scan_limits(self) -> EvaluationConfig:
+        if (
+            self.direct_scan_limit is not None
+            and self.direct_expand_limit is not None
+            and self.direct_expand_limit < self.direct_scan_limit
+        ):
+            raise ValueError("direct_expand_limit must be at least direct_scan_limit")
+        if (
+            self.active_time_limit_seconds is not None
+            and self.freeze_reserve_seconds >= self.active_time_limit_seconds
+        ):
+            raise ValueError("freeze_reserve_seconds must be below active_time_limit_seconds")
+        if self.active_time_limit_seconds is not None:
+            staged = sum(
+                value or 0.0
+                for value in (
+                    self.direct_coverage_budget_seconds,
+                    self.first_model_budget_seconds,
+                )
+            )
+            if staged + self.freeze_reserve_seconds >= self.active_time_limit_seconds:
+                raise ValueError(
+                    "stage budgets plus freeze reserve must leave time for improvement"
+                )
+        if self.llm_concurrency > self.task_concurrency:
+            raise ValueError("llm_concurrency cannot exceed task_concurrency")
+        if (
+            self.sol_after_model_attempts is not None
+            and self.max_model_attempts_per_task is not None
+            and self.sol_after_model_attempts >= self.max_model_attempts_per_task
+        ):
+            raise ValueError(
+                "sol_after_model_attempts must leave room for at least one Sol attempt"
+            )
+        return self
+
+
 class V2ExperimentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -69,6 +132,9 @@ class V2ExperimentConfig(BaseModel):
     openai: ResponsesConfig = Field(default_factory=ResponsesConfig)
     guards: GuardConfig = Field(default_factory=GuardConfig)
     ranker: RankerConfig = Field(default_factory=RankerConfig)
+    # Evaluation policy is frozen separately, allowing a completed training
+    # bank to be reused without changing its experiment identity.
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig, exclude=True)
     no_progress_reset_rounds: int = Field(default=3, ge=1, le=100)
     retrieved_programs: int = Field(default=8, ge=0, le=100)
     # Worker count is operational and intentionally excluded from the frozen
@@ -79,6 +145,20 @@ class V2ExperimentConfig(BaseModel):
 
     def sha256(self) -> str:
         payload = json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    def evaluation_sha256(self) -> str:
+        # Preserve compatibility with evaluation workspaces created before an
+        # explicit evaluation policy existed.
+        if self.evaluation == EvaluationConfig():
+            return self.sha256()
+        payload = json.dumps(
+            {
+                "training_config_sha256": self.sha256(),
+                "evaluation": self.evaluation.model_dump(mode="json"),
+            },
+            sort_keys=True,
+        ).encode()
         return hashlib.sha256(payload).hexdigest()
 
 
