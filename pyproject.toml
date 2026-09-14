@@ -19,6 +19,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+v5 = [
+  "jinja2>=3.1.6,<4",
+  "tokenizers==0.22.2",
+]
+v4 = [
+  "jinja2>=3.1.6,<4",
+]
 v2 = [
   "numpy>=2,<3",
   "scikit-learn>=1.6,<2",
@@ -30,6 +37,8 @@ dev = [
 ]
 [project.scripts]
 arc-agent = "arc_agent.cli:app"
+arc-v4 = "arc_agent.v4_cli:app"
+arc-v5 = "arc_agent.v5_cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/arc_agent"]

@@ -75,6 +75,8 @@ class SynthesisClient(Protocol):
         request: dict[str, Any] | None = None,
     ) -> ResponseSnapshot: ...
 
+    def cancel(self, response_id: str) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -374,6 +376,17 @@ class ResponsesClient:
         if response.is_error:
             raise classify_http_error(response, retrieving=True)
         return response_snapshot(response.json())
+
+    def cancel(self, response_id: str) -> None:
+        try:
+            response = self.client.post(
+                f"{self.responses_url}/{response_id}/cancel",
+                headers=self._headers(),
+            )
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise TransientAPIError(str(exc)) from exc
+        if response.is_error:
+            raise classify_http_error(response, retrieving=True)
 
     def close(self) -> None:
         self.client.close()

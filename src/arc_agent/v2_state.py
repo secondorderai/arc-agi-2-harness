@@ -384,28 +384,37 @@ class V2State:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def requeue_running_tasks(self, phase: str) -> int:
+    def requeue_running_tasks(self, phase: str, *, status: str = "pending") -> int:
         with self.transaction() as connection:
             cursor = connection.execute(
                 """
-                UPDATE phase_tasks SET status='pending', updated_at=?
+                UPDATE phase_tasks SET status=?, updated_at=?
                 WHERE phase=? AND status='running'
                 """,
-                (_now(), phase),
+                (status, _now(), phase),
             )
         return int(cursor.rowcount)
 
     def claim_pending_tasks(self, phase: str, *, limit: int) -> list[dict[str, Any]]:
+        return self.claim_tasks(phase, source_status="pending", limit=limit)
+
+    def claim_tasks(
+        self,
+        phase: str,
+        *,
+        source_status: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
         if limit < 1:
             return []
         with self.transaction(immediate=True) as connection:
             rows = connection.execute(
                 """
                 SELECT task_id FROM phase_tasks
-                WHERE phase=? AND status='pending'
+                WHERE phase=? AND status=?
                 ORDER BY position LIMIT ?
                 """,
-                (phase, limit),
+                (phase, source_status, limit),
             ).fetchall()
             task_ids = [str(row["task_id"]) for row in rows]
             if task_ids:
@@ -413,9 +422,9 @@ class V2State:
                 connection.execute(
                     f"""
                     UPDATE phase_tasks SET status='running', updated_at=?
-                    WHERE phase=? AND task_id IN ({placeholders}) AND status='pending'
+                    WHERE phase=? AND task_id IN ({placeholders}) AND status=?
                     """,
-                    (_now(), phase, *task_ids),
+                    (_now(), phase, *task_ids, source_status),
                 )
         return [self.task_row(phase, task_id) for task_id in task_ids]
 
@@ -973,9 +982,15 @@ class V2State:
         ]
 
     def save_evaluation_output(
-        self, task_id: str, attempts: list[dict[str, Any]], provenance: dict[str, Any]
+        self,
+        task_id: str,
+        attempts: list[dict[str, Any]],
+        provenance: dict[str, Any],
+        *,
+        complete: bool = True,
     ) -> None:
         now = _now()
+        task_status = "accepted" if complete else "covered"
         with self.transaction() as connection:
             connection.execute(
                 """
@@ -989,10 +1004,10 @@ class V2State:
             )
             connection.execute(
                 """
-                UPDATE phase_tasks SET status='accepted', updated_at=?
+                UPDATE phase_tasks SET status=?, updated_at=?
                 WHERE phase='evaluation' AND task_id=?
                 """,
-                (now, task_id),
+                (task_status, now, task_id),
             )
 
     def evaluation_outputs(self) -> dict[str, list[dict[str, Any]]]:
@@ -1075,6 +1090,10 @@ class V2State:
                 start = datetime.fromisoformat(started_at)
                 end = datetime.fromisoformat(completed_at) if completed_at else datetime.now(UTC)
                 active_seconds = max(0.0, (end - start).total_seconds() - paused_seconds)
+        budget_seconds = self.get_meta(f"{phase}_active_time_limit_seconds")
+        budget_remaining_seconds = None
+        if budget_seconds is not None:
+            budget_remaining_seconds = max(0.0, float(budget_seconds) - active_seconds)
         return {
             "phase": phase,
             "status": self.get_meta(f"{phase}_status", "not_started"),
@@ -1089,6 +1108,9 @@ class V2State:
             "quota_pause_count": self.get_meta(f"{phase}_quota_pause_count", 0),
             "paused_seconds": paused_seconds,
             "active_seconds": active_seconds,
+            "active_time_limit_seconds": budget_seconds,
+            "budget_remaining_seconds": budget_remaining_seconds,
+            "freeze_reserve_seconds": self.get_meta(f"{phase}_freeze_reserve_seconds"),
             "stage": self.get_meta(f"{phase}_stage"),
             "ranker_state": self.get_meta("ranker_state") if phase == "training" else None,
             "adaptive_synthesis_policy": self.get_meta(

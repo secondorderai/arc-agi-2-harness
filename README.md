@@ -1,4 +1,39 @@
-# ARC-AGI-2 Bonsai Agent Harness V1
+# ARC-AGI-2 — Astra symbolic teacher, Nanbeige student
+
+The active research pipeline extends [V5: symbolic distillation](docs/V5_SYMBOLIC_DISTILLATION.md):
+**`gpt-6-astra` through the ChatGPT subscription** authors explicit symbolic models;
+the pinned **Nanbeige4.2-3B** is the fine-tuning and eventual offline-inference student.
+No API-key billing or alternative teacher fallback is enabled. Fine-tuning has not launched.
+
+The active [Astra–Nanbeige phased plan](docs/ASTRA_NANBEIGE_PLAN.md) covers symbolic-only
+distillation, training-data isolation, student promotion gates and the October 20 offline target.
+
+The >=70% local-score goal is met by [V6: scored Astra harness](docs/V6_LOCAL_SCORE.md):
+**20/22 test outputs correct (90.91%)**, with **19/20 tasks fully correct (95%)**, on the
+original frozen development pilot. All 20 tasks were processed, including one timeout;
+independent scoring and response replay passed. Its development artifacts are never student
+training data, and this is not an offline Nanbeige or private-competition score.
+
+Current implementation: [V7 training-only witness bridge](docs/V7_SYMBOLIC_BRIDGE.md) and
+[V8 student baseline/compatibility checks](docs/V8_STUDENT_BASELINE.md), using
+`python -m arc_agent.v7_cli` and `python -m arc_agent.v8_cli` in the isolated inference
+environment. V5's original collector remains available for reproduction. All versions preserve
+run identity, training/evaluation separation and durable checkpoints; none imports legacy predictions.
+Warning-level local memory pressure is advisory only when explicitly configured; critical
+pressure, excessive swap growth, telemetry loss and low disk space still stop execution.
+
+## Preserved V4 baseline
+
+The prior local-first iteration is documented in [V4: Nanbeige-only, local-first](docs/V4_LOCAL_FIRST.md).
+It uses only the pinned official Nanbeige4.2-3B checkpoint, an isolated Metal runtime,
+label-blind evaluation, durable checkpoints and explicit promotion gates. There are no
+monetary budget controls. Kaggle and cloud training remain gated on local validation;
+separately billed services require approval.
+
+To reproduce V4, use `python -m arc_agent.v4_cli` in the isolated Nanbeige environment, not the legacy
+solver commands below. Existing models and experiments are preserved but excluded from V4.
+
+## Historical V1–V3 implementation
 
 A clean-holdout, verifier-guided ARC-AGI-2 solver designed for a small local reasoning
 model. The harness combines deterministic program search, learned Markdown skills,
@@ -8,7 +43,8 @@ feedback, and two-attempt Kaggle output generation.
 The target of **50%+** remains the research north star. V1 reports the score it actually
 achieves; it does not tune against the public evaluation set.
 
-See [the V1 design](docs/V1_DESIGN.md) and [measured baseline](docs/BASELINE.md).
+See [the V1 design](docs/V1_DESIGN.md), [measured baseline](docs/BASELINE.md), and the
+[V3 typed-DSL pilot](docs/V3_DESIGN.md).
 
 ## Architecture
 
@@ -162,6 +198,10 @@ the solver must fall back to deterministic attempts.
 - `arc-agent v2-build-bank`: sequentially synthesize and checkpoint the Luna xhigh program bank.
 - `arc-agent v2-evaluate`: resume-safe blind evaluation using direct reuse plus Luna resynthesis.
 - `arc-agent v2-status`: inspect active task, quota pauses, usage, and the exact resume command.
+- `arc-agent v3-auth-login`: sign the isolated V3 pilot workspace into Codex.
+- `arc-agent v3-build-pilot`: synthesize or resume the ten typed JSON signatures with Sol xhigh.
+- `arc-agent v3-evaluate`: run the frozen signature matcher and bounded DSL search offline.
+- `arc-agent v3-status`: inspect pilot/evaluation checkpoints and the exact resume command.
 
 V2 defaults to ChatGPT subscription access through the Codex App Server, so it does not require
 `OPENAI_API_KEY`. Authenticate the run workspace once with `v2-auth-login`, then start the bank

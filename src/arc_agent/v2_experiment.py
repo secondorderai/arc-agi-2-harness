@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import suppress
 from typing import Any
 
 from arc_agent.data import submission_to_json
@@ -225,9 +226,17 @@ class V2Orchestrator:
         self.state.pause(phase, status, str(error))
         raise PhasePaused(status, str(error)) from error
 
-    def _obtain_response(self, request: dict[str, Any]) -> ResponseSnapshot | None:
+    def _obtain_response(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> ResponseSnapshot | None:
         phase = str(request["phase"])
         request_key = str(request["request_key"])
+        deadline = (
+            time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        )
         resuming_quota_failure = request.get("status") == "paused_quota"
         retry_delay = min(
             self.config.openai.retry_max_seconds,
@@ -237,6 +246,29 @@ class V2Orchestrator:
         poll_delay = self.config.openai.poll_initial_seconds
         while True:
             self._check_stopped()
+            if deadline is not None and time.monotonic() >= deadline:
+                response_id = request.get("response_id")
+                if response_id:
+                    with suppress(Exception):
+                        self.client.cancel(str(response_id))
+                self.state.record_request_error(
+                    request_key,
+                    "timed_out",
+                    f"model turn exceeded {timeout_seconds:.1f} seconds",
+                )
+                self.state.mark_request_ingested(request_key)
+                task = self.state.task_row(phase, str(request["task_id"]))
+                self.state.update_task(
+                    phase,
+                    str(request["task_id"]),
+                    round_index=max(
+                        int(task["round_index"]),
+                        int(request["round_index"]) + 1,
+                    ),
+                    previous_response_id=None,
+                    no_progress=int(task["no_progress"]) + 1,
+                )
+                return None
             try:
                 body_json = request.get("body_json")
                 if body_json and request.get("status") in {"completed", "incomplete"}:
@@ -264,7 +296,10 @@ class V2Orchestrator:
                     "body_json": json.dumps(snapshot.body),
                 }
                 if snapshot.status in {"queued", "in_progress"}:
-                    self._wait(poll_delay)
+                    wait_seconds = poll_delay
+                    if deadline is not None:
+                        wait_seconds = min(wait_seconds, max(0.0, deadline - time.monotonic()))
+                    self._wait(wait_seconds)
                     poll_delay = min(self.config.openai.poll_max_seconds, poll_delay * 2)
                     continue
                 if snapshot.status == "failed":
@@ -354,7 +389,13 @@ class V2Orchestrator:
         round_index = int(row["round_index"])
         token_index = min(int(row["token_index"]), len(self.config.openai.max_output_tokens) - 1)
         best = self.state.best_candidate(phase, task.task_id)
-        model = _model_for_round(self.config.openai.model, round_index)
+        evaluation_sol_after = self.config.evaluation.sol_after_model_attempts
+        if phase == "evaluation" and (
+            evaluation_sol_after is not None and round_index >= evaluation_sol_after
+        ):
+            model = ESCALATION_MODEL
+        else:
+            model = _model_for_round(self.config.openai.model, round_index)
         plateau = self.state.repeated_failure_plateau(
             phase,
             task.task_id,
@@ -505,11 +546,17 @@ class V2Orchestrator:
         )
         return verification.accepted
 
-    def synthesize_once(self, task: ArcTask, *, phase: str) -> bool:
+    def synthesize_once(
+        self,
+        task: ArcTask,
+        *,
+        phase: str,
+        timeout_seconds: float | None = None,
+    ) -> bool:
         self._check_stopped()
         pending = self.state.pending_request(phase, task.task_id)
         request = pending or self._prepare_active_request(task, phase=phase)
-        snapshot = self._obtain_response(request)
+        snapshot = self._obtain_response(request, timeout_seconds=timeout_seconds)
         if snapshot is None:
             return False
         return self._ingest_response(
@@ -716,7 +763,11 @@ class V2Orchestrator:
                     message=str(paused),
                 )
             if finalize:
-                self.finalize_bank(ordered, dataset_hash=dataset_hash)
+                self.finalize_bank(
+                    ordered,
+                    dataset_hash=dataset_hash,
+                    concurrency=worker_count,
+                )
             else:
                 self.state.complete_phase("training")
         except KeyboardInterrupt:
@@ -743,29 +794,92 @@ class V2Orchestrator:
         ).fetchone()
         return int(row["count"])
 
-    def finalize_bank(self, tasks: list[ArcTask], *, dataset_hash: str) -> None:
+    def _compute_compatibility(
+        self,
+        task: ArcTask,
+        program: BankProgram,
+    ) -> tuple[str, str, list[float], InductionVerification]:
+        verification = verify_induction_program(
+            program.python_source,
+            task,
+            guards=self.config.guards,
+            include_test_labels=True,
+            run_transformations=False,
+            seed=self.config.seed,
+        )
+        return (
+            program.program_hash,
+            task.task_id,
+            compatibility_features(task, program),
+            verification,
+        )
+
+    def _build_compatibility_matrix(
+        self,
+        tasks: list[ArcTask],
+        programs: list[BankProgram],
+        *,
+        concurrency: int,
+    ) -> None:
+        if not 1 <= concurrency <= 16:
+            raise ValueError("compatibility concurrency must be between 1 and 16")
+
+        pending = (
+            (task, program)
+            for task in tasks
+            for program in programs
+            if not self.state.has_compatibility(program.program_hash, task.task_id)
+        )
+        executor = ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="arc-v2-compatibility",
+        )
+        futures: dict[
+            Future[tuple[str, str, list[float], InductionVerification]],
+            tuple[str, str],
+        ] = {}
+
+        def fill_slots() -> None:
+            while len(futures) < concurrency:
+                try:
+                    task, program = next(pending)
+                except StopIteration:
+                    return
+                future = executor.submit(self._compute_compatibility, task, program)
+                futures[future] = (program.program_hash, task.task_id)
+
+        try:
+            fill_slots()
+            while futures:
+                completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    futures.pop(future)
+                    program_hash, task_id, features, verification = future.result()
+                    self.state.record_compatibility(
+                        program_hash=program_hash,
+                        task_id=task_id,
+                        features=features,
+                        verification=verification,
+                    )
+                fill_slots()
+        finally:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def finalize_bank(
+        self,
+        tasks: list[ArcTask],
+        *,
+        dataset_hash: str,
+        concurrency: int = 1,
+    ) -> None:
         programs = self.state.list_programs()
         if not programs:
             raise RuntimeError("cannot finalize an empty program bank")
         self.state.set_meta("training_stage", "compatibility")
-        for task in tasks:
-            for program in programs:
-                if self.state.has_compatibility(program.program_hash, task.task_id):
-                    continue
-                verification = verify_induction_program(
-                    program.python_source,
-                    task,
-                    guards=self.config.guards,
-                    include_test_labels=True,
-                    run_transformations=False,
-                    seed=self.config.seed,
-                )
-                self.state.record_compatibility(
-                    program_hash=program.program_hash,
-                    task_id=task.task_id,
-                    features=compatibility_features(task, program),
-                    verification=verification,
-                )
+        self.state.set_meta("compatibility_concurrency", concurrency)
+        self._build_compatibility_matrix(tasks, programs, concurrency=concurrency)
         ranker_metrics: dict[str, Any] = {"enabled": False}
         if self.config.ranker.enabled:
             compatibility_rows = self.state.compatibility_rows()
@@ -853,37 +967,361 @@ class V2Orchestrator:
             for row in self.state.accepted_candidates("evaluation", task.task_id)
             if row["source_kind"] == "direct"
         ]
-        while cursor < len(programs) and len(accepted) < self.config.ranker.direct_verified_target:
-            program = programs[cursor]
-            verification = verify_induction_program(
+        policy = self.config.evaluation
+        target = policy.direct_verified_target or self.config.ranker.direct_verified_target
+        initial_limit = min(len(programs), policy.direct_scan_limit or len(programs))
+        expand_limit = min(len(programs), policy.direct_expand_limit or initial_limit)
+        current_limit = initial_limit
+
+        def verify(program: BankProgram) -> InductionVerification:
+            sanitized = sanitize_task(task)
+            if policy.staged_verification:
+                quick_guards = self.config.guards.model_copy(
+                    update={"require_leave_one_out": False}
+                )
+                quick = verify_induction_program(
+                    program.python_source,
+                    sanitized,
+                    guards=quick_guards,
+                    include_test_labels=False,
+                    run_transformations=False,
+                    seed=self.config.seed,
+                )
+                if not quick.accepted:
+                    return quick
+            return verify_induction_program(
                 program.python_source,
-                sanitize_task(task),
+                sanitized,
                 guards=self.config.guards,
                 include_test_labels=False,
                 run_transformations=True,
                 seed=self.config.seed,
             )
-            self.state.record_candidate(
-                phase="evaluation",
-                task_id=task.task_id,
-                round_index=-(cursor + 1),
-                source_kind="direct",
-                response_id=None,
-                hypothesis=program.hypothesis,
-                strategy_tags=program.strategy_tags,
-                invariants=program.invariants,
-                python_source=program.python_source,
-                verification=verification,
-            )
-            cursor += 1
-            self.state.update_task("evaluation", task.task_id, direct_cursor=cursor)
-            if verification.accepted:
-                accepted = [
-                    row
-                    for row in self.state.accepted_candidates("evaluation", task.task_id)
-                    if row["source_kind"] == "direct"
-                ]
+
+        with ThreadPoolExecutor(
+            max_workers=policy.direct_concurrency,
+            thread_name_prefix="arc-v2-direct",
+        ) as executor:
+            while cursor < len(programs) and len(accepted) < target:
+                self._check_stopped()
+                if cursor >= current_limit:
+                    if accepted and current_limit < expand_limit:
+                        current_limit = expand_limit
+                    else:
+                        break
+                batch_end = min(current_limit, cursor + policy.direct_concurrency)
+                batch = programs[cursor:batch_end]
+                # executor.map preserves ranking order. Only this main thread
+                # writes checkpoints, so cursor advancement stays deterministic.
+                results = list(executor.map(verify, batch))
+                for program, verification in zip(batch, results, strict=True):
+                    self.state.record_candidate(
+                        phase="evaluation",
+                        task_id=task.task_id,
+                        round_index=-(cursor + 1),
+                        source_kind="direct",
+                        response_id=None,
+                        hypothesis=program.hypothesis,
+                        strategy_tags=program.strategy_tags,
+                        invariants=program.invariants,
+                        python_source=program.python_source,
+                        verification=verification,
+                    )
+                    cursor += 1
+                    self.state.update_task("evaluation", task.task_id, direct_cursor=cursor)
+                    if verification.accepted:
+                        accepted = [
+                            row
+                            for row in self.state.accepted_candidates(
+                                "evaluation", task.task_id
+                            )
+                            if row["source_kind"] == "direct"
+                        ]
         return accepted
+
+    def _evaluation_budget_remaining(self) -> float | None:
+        limit = self.config.evaluation.active_time_limit_seconds
+        if limit is None:
+            return None
+        return max(0.0, limit - float(self.state.summary("evaluation")["active_seconds"]))
+
+    def _evaluation_solve_budget_exhausted(self) -> bool:
+        remaining = self._evaluation_budget_remaining()
+        return bool(
+            remaining is not None
+            and remaining <= self.config.evaluation.freeze_reserve_seconds
+        )
+
+    def _set_evaluation_stage(self, stage: str) -> None:
+        if self.state.get_meta("evaluation_stage") == stage:
+            return
+        self.state.set_meta("evaluation_stage", stage)
+        self.state.set_meta(
+            "evaluation_stage_started_active_seconds",
+            float(self.state.summary("evaluation")["active_seconds"]),
+        )
+
+    def _evaluation_stage_budget_exhausted(self, limit: float | None) -> bool:
+        if limit is None:
+            return False
+        started = float(
+            self.state.get_meta("evaluation_stage_started_active_seconds", 0.0)
+        )
+        current = float(self.state.summary("evaluation")["active_seconds"])
+        return current - started >= limit
+
+    def _save_selected_evaluation_output(
+        self,
+        task: ArcTask,
+        *,
+        complete: bool,
+        selection_stage: str,
+    ) -> None:
+        attempts, provenance = self._select_attempts(task)
+        provenance["selection_stage"] = selection_stage
+        self.state.save_evaluation_output(
+            task.task_id,
+            [attempt.model_dump(mode="json") for attempt in attempts],
+            provenance,
+            complete=complete,
+        )
+
+    def _run_evaluation_direct_task(
+        self,
+        task: ArcTask,
+        stop_event: threading.Event,
+    ) -> PhasePaused | None:
+        with V2State(self.state.workspace, acquire_workspace_lock=False) as worker_state:
+            worker = V2Orchestrator(
+                self.config,
+                worker_state,
+                sleep=self.sleep,
+                stop_event=stop_event,
+            )
+            try:
+                worker._direct_evaluation(task)
+                worker._save_selected_evaluation_output(
+                    task,
+                    complete=False,
+                    selection_stage="direct_coverage",
+                )
+                return None
+            except PhasePaused as paused:
+                stop_event.set()
+                return paused
+            except WorkerStopped:
+                return None
+            finally:
+                worker.close()
+
+    @staticmethod
+    def _acquire_evaluation_llm_slot(
+        semaphore: threading.Semaphore,
+        stop_event: threading.Event,
+    ) -> bool:
+        while not stop_event.is_set():
+            if semaphore.acquire(timeout=1.0):
+                return True
+        return False
+
+    def _run_evaluation_model_task(
+        self,
+        task: ArcTask,
+        stop_event: threading.Event,
+        llm_semaphore: threading.Semaphore,
+        *,
+        selection_stage: str,
+        skip_if_accepted: bool,
+    ) -> PhasePaused | None:
+        shared_client = self._client
+        with V2State(self.state.workspace, acquire_workspace_lock=False) as worker_state:
+            worker = V2Orchestrator(
+                self.config,
+                worker_state,
+                client=shared_client,
+                sleep=self.sleep,
+                stop_event=stop_event,
+            )
+            try:
+                accepted = worker_state.accepted_candidates("evaluation", task.task_id)
+                if not (skip_if_accepted and accepted):
+                    if not self._acquire_evaluation_llm_slot(llm_semaphore, stop_event):
+                        raise WorkerStopped
+                    try:
+                        worker.synthesize_once(
+                            task,
+                            phase="evaluation",
+                            timeout_seconds=self.config.evaluation.model_turn_timeout_seconds,
+                        )
+                    finally:
+                        llm_semaphore.release()
+                worker._save_selected_evaluation_output(
+                    task,
+                    complete=True,
+                    selection_stage=selection_stage,
+                )
+                return None
+            except PhasePaused as paused:
+                stop_event.set()
+                return paused
+            except WorkerStopped:
+                return None
+            finally:
+                if shared_client is None:
+                    worker.close()
+
+    def _run_evaluation_pool(
+        self,
+        tasks_by_id: dict[str, ArcTask],
+        *,
+        source_status: str,
+        requeue_status: str,
+        mode: str,
+        llm_semaphore: threading.Semaphore,
+        stage_budget_seconds: float | None = None,
+    ) -> tuple[PhasePaused | None, bool, bool]:
+        concurrency = self.config.evaluation.task_concurrency
+        stop_event = threading.Event()
+        executor = ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix=f"arc-v2-evaluation-{mode}",
+        )
+        futures: dict[Future[PhasePaused | None], str] = {}
+
+        def fill_slots() -> None:
+            if stop_event.is_set():
+                return
+            available = concurrency - len(futures)
+            for row in self.state.claim_tasks(
+                "evaluation",
+                source_status=source_status,
+                limit=available,
+            ):
+                task_id = str(row["task_id"])
+                if mode == "direct":
+                    future = executor.submit(
+                        self._run_evaluation_direct_task,
+                        tasks_by_id[task_id],
+                        stop_event,
+                    )
+                else:
+                    future = executor.submit(
+                        self._run_evaluation_model_task,
+                        tasks_by_id[task_id],
+                        stop_event,
+                        llm_semaphore,
+                        selection_stage=mode,
+                        skip_if_accepted=mode == "first_model",
+                    )
+                futures[future] = task_id
+
+        paused: PhasePaused | None = None
+        budget_exhausted = False
+        stage_exhausted = False
+        try:
+            fill_slots()
+            while (
+                futures
+                and paused is None
+                and not budget_exhausted
+                and not stage_exhausted
+            ):
+                completed, _ = wait(futures, timeout=1.0, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    futures.pop(future)
+                    result = future.result()
+                    if result is not None:
+                        paused = result
+                        stop_event.set()
+                if self._evaluation_solve_budget_exhausted():
+                    budget_exhausted = True
+                    stop_event.set()
+                elif self._evaluation_stage_budget_exhausted(stage_budget_seconds):
+                    stage_exhausted = True
+                    stop_event.set()
+                elif paused is None:
+                    fill_slots()
+        except BaseException:
+            stop_event.set()
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+            self.state.requeue_running_tasks("evaluation", status=requeue_status)
+            raise
+        stop_event.set()
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        self.state.requeue_running_tasks("evaluation", status=requeue_status)
+        return paused, budget_exhausted, stage_exhausted
+
+    def _eligible_evaluation_improvements(self) -> list[str]:
+        maximum = self.config.evaluation.max_model_attempts_per_task
+        if maximum is None:
+            return []
+        rows = self.state.connection.execute(
+            """
+            SELECT task_id, round_index, no_progress, best_score, position
+            FROM phase_tasks
+            WHERE phase='evaluation' AND status='accepted'
+            ORDER BY no_progress ASC, best_score DESC, position ASC
+            """
+        ).fetchall()
+        eligible: list[str] = []
+        for row in rows:
+            task_id = str(row["task_id"])
+            if int(row["round_index"]) >= maximum or int(row["no_progress"]) > 0:
+                continue
+            if self.state.accepted_candidates("evaluation", task_id):
+                continue
+            eligible.append(task_id)
+        return eligible
+
+    def _schedule_evaluation_improvements(self, task_ids: list[str]) -> None:
+        if not task_ids:
+            return
+        with self.state.transaction(immediate=True) as connection:
+            placeholders = ",".join("?" for _ in task_ids)
+            connection.execute(
+                f"""
+                UPDATE phase_tasks SET status='improve_pending'
+                WHERE phase='evaluation' AND status='accepted'
+                    AND task_id IN ({placeholders})
+                """,
+                task_ids,
+            )
+
+    def _finalize_all_evaluation_outputs(
+        self,
+        tasks: list[ArcTask],
+        *,
+        selection_stage: str,
+    ) -> None:
+        for task in tasks:
+            row = self.state.task_row("evaluation", task.task_id)
+            if row["status"] == "accepted":
+                continue
+            self._save_selected_evaluation_output(
+                task,
+                complete=True,
+                selection_stage=selection_stage,
+            )
+
+    def _cover_all_evaluation_tasks(
+        self,
+        tasks: list[ArcTask],
+        *,
+        selection_stage: str,
+    ) -> None:
+        for task in tasks:
+            row = self.state.task_row("evaluation", task.task_id)
+            if row["status"] in {"accepted", "covered"}:
+                continue
+            self._save_selected_evaluation_output(
+                task,
+                complete=False,
+                selection_stage=selection_stage,
+            )
 
     def _select_attempts(self, task: ArcTask) -> tuple[list[Attempt], dict[str, Any]]:
         rows = self.state.candidates("evaluation", task.task_id)
@@ -932,6 +1370,162 @@ class V2Orchestrator:
         }
         return attempts, provenance
 
+    def _budgeted_evaluation_result(
+        self,
+        *,
+        status: str,
+        total_tasks: int,
+        message: str,
+    ) -> RunResult:
+        active = self.state.active_task("evaluation")
+        return RunResult(
+            status=status,
+            active_task_id=str(active["task_id"]) if active else None,
+            completed_tasks=self._completed_count("evaluation"),
+            total_tasks=total_tasks,
+            message=message,
+        )
+
+    def _evaluate_with_active_time_budget(
+        self,
+        sanitized: list[ArcTask],
+        labelled: list[ArcTask],
+    ) -> RunResult:
+        by_id = {task.task_id: task for task in sanitized}
+        policy = self.config.evaluation
+        llm_semaphore = threading.Semaphore(policy.llm_concurrency)
+        stage = str(self.state.get_meta("evaluation_stage", "direct_coverage"))
+        self._set_evaluation_stage(stage)
+
+        try:
+            while stage != "frozen":
+                if self._evaluation_solve_budget_exhausted():
+                    self.state.set_meta("evaluation_budget_exhausted", True)
+                    stage = "freezing"
+                    self._set_evaluation_stage(stage)
+
+                if stage == "direct_coverage":
+                    self.state.requeue_running_tasks("evaluation", status="pending")
+                    paused, exhausted, stage_exhausted = self._run_evaluation_pool(
+                        by_id,
+                        source_status="pending",
+                        requeue_status="pending",
+                        mode="direct",
+                        llm_semaphore=llm_semaphore,
+                        stage_budget_seconds=policy.direct_coverage_budget_seconds,
+                    )
+                    if paused is not None:
+                        return self._budgeted_evaluation_result(
+                            status=paused.status,
+                            total_tasks=len(sanitized),
+                            message=str(paused),
+                        )
+                    if stage_exhausted:
+                        self._cover_all_evaluation_tasks(
+                            sanitized,
+                            selection_stage="direct_coverage_budget",
+                        )
+                    stage = "freezing" if exhausted else "first_model"
+                    self._set_evaluation_stage(stage)
+                    continue
+
+                if stage == "first_model":
+                    self.state.requeue_running_tasks("evaluation", status="covered")
+                    paused, exhausted, stage_exhausted = self._run_evaluation_pool(
+                        by_id,
+                        source_status="covered",
+                        requeue_status="covered",
+                        mode="first_model",
+                        llm_semaphore=llm_semaphore,
+                        stage_budget_seconds=policy.first_model_budget_seconds,
+                    )
+                    if paused is not None:
+                        return self._budgeted_evaluation_result(
+                            status=paused.status,
+                            total_tasks=len(sanitized),
+                            message=str(paused),
+                        )
+                    if stage_exhausted:
+                        self._finalize_all_evaluation_outputs(
+                            sanitized,
+                            selection_stage="first_model_budget",
+                        )
+                    stage = "freezing" if exhausted else "improvement"
+                    self._set_evaluation_stage(stage)
+                    continue
+
+                if stage == "improvement":
+                    self.state.requeue_running_tasks(
+                        "evaluation", status="improve_pending"
+                    )
+                    queued = self.state.connection.execute(
+                        """
+                        SELECT COUNT(*) AS count FROM phase_tasks
+                        WHERE phase='evaluation' AND status='improve_pending'
+                        """
+                    ).fetchone()["count"]
+                    if not queued:
+                        self._schedule_evaluation_improvements(
+                            self._eligible_evaluation_improvements()
+                        )
+                        queued = self.state.connection.execute(
+                            """
+                            SELECT COUNT(*) AS count FROM phase_tasks
+                            WHERE phase='evaluation' AND status='improve_pending'
+                            """
+                        ).fetchone()["count"]
+                    if not queued:
+                        stage = "freezing"
+                        self._set_evaluation_stage(stage)
+                        continue
+                    paused, exhausted, _ = self._run_evaluation_pool(
+                        by_id,
+                        source_status="improve_pending",
+                        requeue_status="improve_pending",
+                        mode="improvement",
+                        llm_semaphore=llm_semaphore,
+                    )
+                    if paused is not None:
+                        return self._budgeted_evaluation_result(
+                            status=paused.status,
+                            total_tasks=len(sanitized),
+                            message=str(paused),
+                        )
+                    if exhausted:
+                        stage = "freezing"
+                        self._set_evaluation_stage(stage)
+                    continue
+
+                if stage == "freezing":
+                    self._finalize_all_evaluation_outputs(
+                        sanitized,
+                        selection_stage=(
+                            "budget_deadline"
+                            if self.state.get_meta("evaluation_budget_exhausted", False)
+                            else "final"
+                        ),
+                    )
+                    self._freeze_and_score(labelled)
+                    stage = "frozen"
+                    self._set_evaluation_stage(stage)
+                    continue
+
+                raise RuntimeError(f"unknown evaluation stage {stage!r}")
+        except KeyboardInterrupt:
+            self.state.pause("evaluation", "paused_user", "interrupted by user")
+            return self._budgeted_evaluation_result(
+                status="paused_user",
+                total_tasks=len(sanitized),
+                message="interrupted by user",
+            )
+
+        return RunResult(
+            status="complete",
+            completed_tasks=len(sanitized),
+            total_tasks=len(sanitized),
+            message=f"frozen submission: {self.state.workspace / 'submission.json'}",
+        )
+
     def evaluate(
         self,
         labelled_tasks: list[ArcTask],
@@ -944,17 +1538,31 @@ class V2Orchestrator:
             raise RuntimeError("the training program bank must be complete before evaluation")
         self.state.set_meta("openai_auth_mode", self.config.openai.auth_mode)
         self.state.set_meta("evaluation_adaptive_synthesis_policy", adaptive_synthesis_policy())
+        self.state.set_meta(
+            "evaluation_direct_policy",
+            self.config.evaluation.model_dump(mode="json"),
+        )
         ordered_labelled = sorted(labelled_tasks, key=lambda task: task.task_id)
         sanitized = [sanitize_task(task) for task in ordered_labelled]
         self.state.initialize_phase(
             phase="evaluation",
             task_ids=[task.task_id for task in sanitized],
             dataset_hash=dataset_hash,
-            config_hash=self.config.sha256(),
+            config_hash=self.config.evaluation_sha256(),
             resume_only=resume_only,
+        )
+        self.state.set_meta(
+            "evaluation_active_time_limit_seconds",
+            self.config.evaluation.active_time_limit_seconds,
+        )
+        self.state.set_meta(
+            "evaluation_freeze_reserve_seconds",
+            self.config.evaluation.freeze_reserve_seconds,
         )
         if restart_task:
             self.state.restart_active_task("evaluation")
+        if self.config.evaluation.active_time_limit_seconds is not None:
+            return self._evaluate_with_active_time_budget(sanitized, ordered_labelled)
         by_id = {task.task_id: task for task in sanitized}
         try:
             while (active := self.state.active_task("evaluation")) is not None:

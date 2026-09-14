@@ -1,0 +1,11 @@
+runtime_config: configs/v8-nanbeige-local.yaml
+data: data/ARC-AGI-2/data/training
+split: runs/v4/split.json
+seeds: [42, 43, 44]
+modes: [direct, symbolic]
+structured_style: reference_repair
+max_cycles: 4
+task_seconds: 900
+global_seconds: 39600
+cohort: frozen_development_20
+state_policy: explicit_symbolic_state_with_external_evidence

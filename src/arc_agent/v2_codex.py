@@ -1031,6 +1031,15 @@ class CodexSubscriptionClient:
             )
         raise TransientAPIError(f"unknown Codex turn status {status!r}")
 
+    def cancel(self, response_id: str) -> None:
+        thread_id, turn_id, _ = _parse_response_id(response_id)
+        if turn_id == "pending":
+            return
+        self._request(
+            "turn/interrupt",
+            {"threadId": thread_id, "turnId": turn_id},
+        )
+
     def close(self) -> None:
         if self._rpc is not None:
             self._rpc.close()

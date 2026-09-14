@@ -1,0 +1,39 @@
+name: v3-sol-xhigh-pilot
+teacher:
+  auth_mode: chatgpt_subscription
+  model: gpt-5.6-sol
+  codex_cli: codex
+  subscription_daemon: true
+  reasoning_effort: xhigh
+  reasoning_context: all_turns
+  background: true
+  store: true
+  max_output_tokens: [4096, 8192, 16384]
+  request_timeout_seconds: 60
+  poll_initial_seconds: 2
+  poll_max_seconds: 60
+  retry_initial_seconds: 5
+  retry_max_seconds: 300
+pilot:
+  size: 10
+  family_pairs: 2
+  max_attempts_per_task: 12
+  plateau_rounds: 3
+  max_pipeline_steps: 16
+  max_parameters: 20
+  max_literal_scalars: 64
+search:
+  retrieved_signatures: 3
+  mutations_per_signature: 32
+  family_search_limit: 64
+  global_search_limit: 128
+  max_candidates_per_task: 256
+  leave_one_out_weight: 25
+  invariant_weight: 10
+  complexity_weight: 1
+evaluation:
+  target_active_seconds: 36000
+  hard_active_seconds: 43200
+  freeze_reserve_seconds: 7200
+  task_concurrency: 1
+seed: 42

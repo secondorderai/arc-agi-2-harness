@@ -1,0 +1,50 @@
+name: v2-luna-xhigh
+openai:
+  auth_mode: chatgpt_subscription
+  model: gpt-5.6-luna
+  codex_cli: codex
+  subscription_daemon: true
+  reasoning_effort: xhigh
+  reasoning_context: all_turns
+  background: true
+  store: true
+  max_output_tokens: [32768, 65536, 128000]
+  request_timeout_seconds: 60
+  poll_initial_seconds: 2
+  poll_max_seconds: 60
+  retry_initial_seconds: 5
+  retry_max_seconds: 300
+guards:
+  max_source_chars: 20000
+  max_literal_scalars: 64
+  wall_timeout_seconds: 3
+  d4_transforms: true
+  color_permutations: 4
+  require_leave_one_out: true
+ranker:
+  enabled: true
+  seed: 42
+  epochs: 10
+  alpha: 0.0001
+  folds: 5
+  direct_verified_target: 8
+evaluation:
+  direct_scan_limit: 64
+  direct_expand_limit: 128
+  direct_verified_target: 1
+  direct_concurrency: 4
+  staged_verification: true
+  active_time_limit_seconds: 43200
+  freeze_reserve_seconds: 1800
+  direct_coverage_budget_seconds: 3600
+  first_model_budget_seconds: 21600
+  task_concurrency: 4
+  llm_concurrency: 2
+  model_turn_timeout_seconds: 360
+  max_model_attempts_per_task: 3
+  sol_after_model_attempts: 2
+no_progress_reset_rounds: 3
+retrieved_programs: 8
+training_concurrency: 2
+max_refinement_rounds: 80
+seed: 42

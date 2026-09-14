@@ -474,5 +474,173 @@ def v2_auth_status(
         raise typer.Exit(completed.returncode)
 
 
+@app.command("v3-build-pilot")
+def v3_build_pilot(
+    data: Annotated[
+        Path, typer.Option(exists=True, readable=True, help="Labelled official training tasks")
+    ] = Path("data/ARC-AGI-2/data/training"),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v3-sol-xhigh.yaml"
+    ),
+    workspace: Annotated[Path, typer.Option(help="Durable V3 pilot workspace")] = Path(
+        "runs/v3-pilot"
+    ),
+    resume: Annotated[
+        bool, typer.Option(help="Require an existing matching pilot workspace")
+    ] = False,
+) -> None:
+    """Build or resume the ten-task, Sol-authored V3 signature pilot."""
+    from arc_agent.v3_config import load_v3_config
+    from arc_agent.v3_experiment import V3Orchestrator
+    from arc_agent.v3_fingerprint import blind_dataset_sha256
+    from arc_agent.v3_state import StateMismatch, V3State, WorkspaceBusy
+
+    tasks = load_tasks(data)
+    if any(pair.output is None for task in tasks for pair in task.test):
+        raise typer.BadParameter("V3 pilot needs labelled test outputs for post-freeze scoring")
+    try:
+        with V3State(workspace) as state:
+            if state.get_meta("pilot_data_path") is None:
+                state.set_meta("pilot_data_path", str(data.resolve()))
+            if state.get_meta("pilot_config_path") is None:
+                state.set_meta("pilot_config_path", str(config.resolve()))
+            orchestrator = V3Orchestrator(load_v3_config(config), state)
+            try:
+                result = orchestrator.build_pilot(
+                    tasks,
+                    dataset_hash=blind_dataset_sha256(tasks),
+                    resume_only=resume,
+                )
+            finally:
+                orchestrator.close()
+    except (StateMismatch, WorkspaceBusy) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(result.model_dump_json(indent=2))
+    if result.status == "paused_quota":
+        raise typer.Exit(75)
+    if result.status == "paused_configuration":
+        raise typer.Exit(78)
+
+
+@app.command("v3-evaluate")
+def v3_evaluate(
+    data: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            readable=True,
+            help="Public evaluation or unlabelled private challenge tasks",
+        ),
+    ] = Path("data/ARC-AGI-2/data/evaluation"),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v3-sol-xhigh.yaml"
+    ),
+    workspace: Annotated[Path, typer.Option(help="Completed V3 pilot workspace")] = Path(
+        "runs/v3-pilot"
+    ),
+    resume: Annotated[
+        bool, typer.Option(help="Require an existing matching evaluation run")
+    ] = False,
+) -> None:
+    """Run or resume the frozen V3 solver; this path never constructs a model client."""
+    from arc_agent.v3_config import load_v3_config
+    from arc_agent.v3_experiment import V3Orchestrator
+    from arc_agent.v3_fingerprint import blind_dataset_sha256
+    from arc_agent.v3_state import StateMismatch, V3State, WorkspaceBusy
+
+    tasks = load_tasks(data)
+    try:
+        with V3State(workspace) as state:
+            if state.get_meta("evaluation_data_path") is None:
+                state.set_meta("evaluation_data_path", str(data.resolve()))
+            if state.get_meta("evaluation_config_path") is None:
+                state.set_meta("evaluation_config_path", str(config.resolve()))
+            result = V3Orchestrator(load_v3_config(config), state).evaluate(
+                tasks,
+                dataset_hash=blind_dataset_sha256(tasks),
+                resume_only=resume,
+            )
+    except (StateMismatch, WorkspaceBusy) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("v3-status")
+def v3_status(
+    workspace: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "runs/v3-pilot"
+    ),
+    phase: Annotated[str, typer.Option(help="pilot or evaluation")] = "pilot",
+) -> None:
+    """Show V3 checkpoint, usage, active task, and exact resume command."""
+    from arc_agent.v3_state import V3State
+
+    if phase not in {"pilot", "evaluation"}:
+        raise typer.BadParameter("phase must be pilot or evaluation")
+    with V3State(workspace, read_only=True) as state:
+        summary = state.summary(phase)
+        data_path = state.get_meta(f"{phase}_data_path")
+        config_path = state.get_meta(f"{phase}_config_path")
+    command = "v3-build-pilot" if phase == "pilot" else "v3-evaluate"
+    parts = ["uv run arc-agent", command]
+    if data_path:
+        parts.extend(["--data", shlex.quote(str(data_path))])
+    if config_path:
+        parts.extend(["--config", shlex.quote(str(config_path))])
+    parts.extend(["--workspace", shlex.quote(str(workspace)), "--resume"])
+    summary["resume_command"] = " ".join(parts)
+    typer.echo(json.dumps(summary, indent=2, sort_keys=True))
+
+
+@app.command("v3-auth-login")
+def v3_auth_login(
+    workspace: Annotated[Path, typer.Option(help="Durable V3 pilot workspace")] = Path(
+        "runs/v3-pilot"
+    ),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v3-sol-xhigh.yaml"
+    ),
+) -> None:
+    """Sign the isolated V3 workspace into Codex with a ChatGPT subscription."""
+    from arc_agent.v2_codex import (
+        codex_auth_command,
+        restart_subscription_daemon,
+        subscription_home,
+    )
+    from arc_agent.v3_config import load_v3_config
+
+    settings = load_v3_config(config).teacher
+    if settings.auth_mode != "chatgpt_subscription":
+        raise typer.BadParameter("config teacher.auth_mode must be chatgpt_subscription")
+    command, environment = codex_auth_command(settings, workspace)  # type: ignore[arg-type]
+    typer.echo(f"Codex subscription home: {subscription_home(workspace).resolve()}")
+    completed = subprocess.run(command, env=environment, check=False)
+    if completed.returncode:
+        raise typer.Exit(completed.returncode)
+    restart_subscription_daemon(settings, workspace)  # type: ignore[arg-type]
+
+
+@app.command("v3-auth-status")
+def v3_auth_status(
+    workspace: Annotated[Path, typer.Option(help="Durable V3 pilot workspace")] = Path(
+        "runs/v3-pilot"
+    ),
+    config: Annotated[Path, typer.Option(exists=True, readable=True)] = Path(
+        "configs/v3-sol-xhigh.yaml"
+    ),
+) -> None:
+    """Show the ChatGPT subscription login isolated to the V3 workspace."""
+    from arc_agent.v2_codex import codex_auth_command
+    from arc_agent.v3_config import load_v3_config
+
+    settings = load_v3_config(config).teacher
+    if settings.auth_mode != "chatgpt_subscription":
+        raise typer.BadParameter("config teacher.auth_mode must be chatgpt_subscription")
+    command, environment = codex_auth_command(settings, workspace)  # type: ignore[arg-type]
+    completed = subprocess.run([*command, "status"], env=environment, check=False)
+    if completed.returncode:
+        raise typer.Exit(completed.returncode)
+
+
 if __name__ == "__main__":
     app()
