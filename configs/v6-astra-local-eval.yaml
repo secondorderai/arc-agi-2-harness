@@ -1,0 +1,16 @@
+teacher:
+  auth_mode: chatgpt_subscription
+  model: gpt-6-astra
+  reasoning_effort: xhigh
+  codex_cli: /Applications/ChatGPT.app/Contents/Resources/codex
+  subscription_daemon: false
+auth_workspace: runs/v3-pilot
+data: data/ARC-AGI-2/data/training
+split: runs/v4/split.json
+cohort: frozen_v4_development_20
+max_rounds: 4
+task_seconds: 1800
+global_seconds: 39600
+poll_seconds: 2
+output_token_hint: 16000
+target: 0.7
