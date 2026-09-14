@@ -1,6 +1,8 @@
 .DS_Store
 .coverage
 .env
+.env.*
+!.env.example
 .codex-subscription/
 **/.codex-subscription/
 .pytest_cache/
@@ -8,6 +10,7 @@
 .venv/
 .venv-bonsai/
 .runtime/
+node_modules/
 __pycache__/
 *.py[cod]
 data/ARC-AGI-2/
@@ -16,3 +19,6 @@ runs/
 dist/
 build/
 htmlcov/
+
+# Local account screenshots are not reproducible project artifacts.
+/lightning-ai*.png
