@@ -1,26 +1,113 @@
 # ARC-AGI-2 — Astra symbolic teacher, Nanbeige student
 
-The active research pipeline extends [V5: symbolic distillation](docs/V5_SYMBOLIC_DISTILLATION.md):
-**`gpt-6-astra` through the ChatGPT subscription** authors explicit symbolic models;
-the pinned **Nanbeige4.2-3B** is the fine-tuning and eventual offline-inference student.
-No API-key billing or alternative teacher fallback is enabled. Fine-tuning has not launched.
+The research pipeline extends [V5: symbolic distillation](docs/V5_SYMBOLIC_DISTILLATION.md):
+**`gpt-6-astra` through the ChatGPT subscription** is the symbolic teacher and online reference
+solver; the pinned **Nanbeige4.2-3B** is the intended fine-tuning and offline-inference student.
+The hypothesis is that learning grounded representations, hypotheses and revisions improves
+generalisation—not simply reproducing final puzzle grids. That transfer is not yet demonstrated.
+No API-key billing or alternative teacher/student fallback is enabled.
 
 The active [Astra–Nanbeige phased plan](docs/ASTRA_NANBEIGE_PLAN.md) covers symbolic-only
 distillation, training-data isolation, student promotion gates and the October 20 offline target.
 
-The >=70% local-score goal is met by [V6: scored Astra harness](docs/V6_LOCAL_SCORE.md):
-**20/22 test outputs correct (90.91%)**, with **19/20 tasks fully correct (95%)**, on the
-original frozen development pilot. All 20 tasks were processed, including one timeout;
-independent scoring and response replay passed. Its development artifacts are never student
-training data, and this is not an offline Nanbeige or private-competition score.
+## Latest experiments
 
-Current implementation: [V7 training-only witness bridge](docs/V7_SYMBOLIC_BRIDGE.md) and
-[V8 student baseline/compatibility checks](docs/V8_STUDENT_BASELINE.md), using
-`python -m arc_agent.v7_cli` and `python -m arc_agent.v8_cli` in the isolated inference
-environment. V5's original collector remains available for reproduction. All versions preserve
-run identity, training/evaluation separation and durable checkpoints; none imports legacy predictions.
-Warning-level local memory pressure is advisory only when explicitly configured; critical
-pressure, excessive swap growth, telemetry loss and low disk space still stop execution.
+Status checked **15 September 2026**; latest model experiments ran **8–9 September**.
+Under the current Astra–Nanbeige roadmap, **Phase 0's teacher reference baseline is complete;
+Phase 1 is incomplete**. The symbolic-data pilot passed, but the latest untrained student run
+stopped on a memory safeguard. No official-weight Nanbeige fine-tuning, GPU validation,
+lockbox evaluation or competition submission has run.
+
+| Experiment | Observed result | Interpretation |
+| --- | --- | --- |
+| [V2 public evaluation](docs/V2_FAILURE_ANALYSIS.md) | **3/167 outputs (1.80%)**, **3/120 whole tasks (2.50%)**; 115/121 model requests timed out. | Timeout-dominated retrieval/fallback result, not a complete test of model resynthesis. |
+| [V4 local Nanbeige](docs/V4_IMPLEMENTATION_STATUS.md) | Metal/native-tool/restart fixtures passed at 4K and 8K. Adaptive-context and extended-deadline trials reached 12K, then stopped on memory pressure without correct completed predictions. | Compatibility passed on fixtures; the full ARC pilot did not. Longer context/time alone did not establish improvement. |
+| [V5 symbolic-data pilot](docs/V5_SYMBOLIC_DISTILLATION.md) | One training task produced one grounding-only target; **zero full-symbolic targets** accepted. | Motivated separating symbolic representations from a more expressive executable witness. |
+| [V6 Astra reference solver](docs/V6_LOCAL_SCORE.md) | **20/22 outputs (90.91%)**, **19/20 whole tasks (95%)**, in **65m16s**; one timeout counted as two wrong outputs. Independent scoring and saved-response replay passed. | Completed online teacher result on the frozen development pilot—not Nanbeige or private-competition performance. |
+| [V7 symbolic witness bridge](docs/V7_SYMBOLIC_BRIDGE.md) | All 20 training tasks processed; **21/21 structured-valid responses**; **39 admitted targets**: 20 grounding, 18 interpretation, one repair. Post-completion replay audit passed. | A small, verified curriculum pilot. One sealed-example failure stayed rejected; no heldout-driven repair. |
+| [V8 latest Nanbeige baseline](docs/V8_STUDENT_BASELINE.md) | Direct seed 42 completed 20 tasks: **1/22 outputs (4.55%)**, **0/20 whole tasks**, 100% structured validity. The overall three-seed/two-mode run stopped incomplete after **2h04m49s**. | An untrained direct-mode result within an incomplete, non-qualifying baseline—not a trained-student gain. |
+
+Output scores above are exact match using either of two predictions per test input. The V2
+public-evaluation cohort differs from the V6/V8 pilot; these rows are not a controlled comparison.
+V6 and V8 use the same frozen **20 development tasks / 22 test inputs** from the official training
+corpus. The underlying split is **792 training / 103 development / 105 lockbox tasks**;
+V7 uses training tasks only. Development traces never become student targets. Public-task
+pretraining contamination cannot be ruled out, even with correct harness-level isolation.
+
+### What changed in V8
+
+- **Reference and witness repair:** valid JSON alone still produced undefined concepts or
+  incorrect grounding. Nanbeige-authored reference patches and later code-only repair of
+  statically rejected witnesses passed fresh 4K/8K fixtures while preserving verified state.
+  The reference-patch development run nevertheless failed its structured-validity gate.
+- **Compact cells:** lossless `[row,column,color]` encoding reduced aggregate payload tokens
+  by **16.7% across 26 complete saved states**, with exact round trips. This is serialization,
+  not reasoning compaction or an end-to-end speedup. Its development run stopped after 40
+  stages: the maximum achievable symbolic validity was **94.29%**, below 95%; all nine malformed
+  replies had hit the **2K output cap**, rather than the context limit.
+- **Larger answer allowance:** a new, separate protocol raised generation to **4K tokens per
+  call**. Offline 8K/12K fixtures passed. The baseline started at **12,288 context tokens**,
+  with 15 minutes per task/mode/seed and an 11-hour run cap; the full answer allowance is
+  reserved before generation. The 2K experiments remain preserved, not retroactively changed.
+
+The latest run, `runs/v8/untrained-output4k-baseline-01`, stopped on **9 September at 09:31
+Brisbane** after host-wide additional swap reached **1.099 GiB**, exceeding the unchanged
+1 GiB limit. Warning-level pressure was permitted and was **not** itself the stop trigger;
+host-wide telemetry does not prove Nanbeige alone caused the swap growth.
+
+It retained **68 completed responses and one interrupted request with unknown usage**.
+Direct seed 43 completed four tasks with no correct outputs; seed 44 was unstarted.
+Symbolic seed 42 returned 37/40 structured-valid replies, but neither started symbolic group
+produced a grounded state or terminal task. Complete two-prediction fallback files exist for
+all six mode/seed groups; file completeness is not experiment completion.
+
+The stopped score/evidence audit passed. The supplemental recovery audit correctly rejected
+the new runtime failure: an earlier startup-only exception does not authorize continuation.
+Raw failed safety flags and checkpoints remain intact; follow-up is paused. **Do not resume
+this run under its old approval or repeat the unknown-usage call.** Details and evidence paths
+are in the [V8 protocol and safety-stop record](docs/V8_STUDENT_BASELINE.md).
+
+### Training readiness and remaining gates
+
+The implemented training stack is **PyTorch + Transformers + TRL SFTTrainer + PEFT LoRA**, with
+[pinned dependencies](configs/nanbeige-trainer-requirements.txt) and a separate
+[CUDA compatibility/SFT runner](scripts/train_nanbeige_symbolic.py). The local CPU probe checked
+completion-only data-loader masks for all **39 examples**, **154 unique LoRA attachments across
+22 shared physical layers**, and adapter updates/save/reload/exact resume on a **tiny random
+Nanbeige architecture fixture**. It did not load or train the official 3B weights. All 39
+compact native-format examples fit 8K without truncation; they are not 39 independent tasks.
+
+The supervision targets are explicit symbolic state, not final grids, witness code or opaque
+provider reasoning. Executable witnesses check consequences; they do not prove every prose
+definition or guarantee generalisation. Trained-checkpoint provenance and adapter-payload
+checks exist, but trained-model export and the separate candidate evaluation path remain unfinished.
+
+Before advancing:
+
+1. Agree on a resource-safe replacement student baseline; preserve failed runs and require a
+   complete comparison with the configured validity and memory gates intact.
+2. Resolve the documented [Astra output-use gate](docs/ASTRA_OUTPUT_USE_REVIEW.md) before further
+   teacher collection, dataset upload or real student training. Existing training drafts are
+   unsealed and tied to failed baselines; they cannot be silently rebound or treated as approval.
+3. Validate the official checkpoint on approved GPU hardware, then train and compare the
+   actual student under the same frozen solver protocol. Separately billed jobs need approval.
+   Kaggle portability, controlled retention/compaction ablations and lockbox evaluation remain
+   unproven; teacher accuracy and local fixtures do not establish L4 throughput or eligibility.
+
+Current regression verification: **794 tests passed** on 15 September, with two dependency
+deprecation warnings. Solver/test lint passes; the historical V2 report generator retains
+formatting warnings. These are harness checks, not model accuracy or full-size training evidence.
+Run the suite in the prepared local environment with:
+
+```sh
+.runtime/nanbeige/venv/bin/python -m pytest
+```
+
+Some tests require the pinned local tokenizer and llama.cpp grammar tools; a bare clone is
+not sufficient for the full suite. See the [local setup guide](docs/V4_LOCAL_FIRST.md) and
+[V8 verification notes](docs/V8_STUDENT_BASELINE.md). Raw `runs/`, `.runtime/`, weights and local
+account screenshots are excluded from Git; linked documentation records their local evidence
+paths. No experiment was restarted to prepare this README.
 
 ## Preserved V4 baseline
 
@@ -34,6 +121,9 @@ To reproduce V4, use `python -m arc_agent.v4_cli` in the isolated Nanbeige envir
 solver commands below. Existing models and experiments are preserved but excluded from V4.
 
 ## Historical V1–V3 implementation
+
+The architecture, model setup and commands below describe preserved historical experiments,
+not the active Astra–Nanbeige student pipeline. Bonsai/Qwen artifacts are not active fallbacks.
 
 A clean-holdout, verifier-guided ARC-AGI-2 solver designed for a small local reasoning
 model. The harness combines deterministic program search, learned Markdown skills,
