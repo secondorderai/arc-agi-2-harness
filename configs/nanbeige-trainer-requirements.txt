@@ -1,0 +1,12 @@
+# Isolated local compatibility runtime, not the inference environment.
+# The authors recommend transformers==4.45.1. This newer stack is an experiment;
+# the pinned model's import, shared layers, masks and resume must pass live tests.
+torch==2.11.0
+transformers==4.57.6
+trl==0.25.1
+peft==0.18.0
+accelerate==1.12.0
+datasets==4.4.1
+trackio==0.11.0
+sentencepiece==0.2.1
+protobuf==4.25.8
